@@ -329,7 +329,7 @@ impl PlatformBackend for X11Backend {
             .colormap(colormap)
             .border_pixel(0)
             .background_pixel(0)
-            .override_redirect(0)
+            .override_redirect(1)
             .event_mask(
                 EventMask::EXPOSURE
                 | EventMask::BUTTON_PRESS
@@ -358,7 +358,6 @@ impl PlatformBackend for X11Backend {
         let wm_state_above = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
         let wm_state_skip_taskbar = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?.reply()?.atom;
         let wm_state_skip_pager = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_PAGER")?.reply()?.atom;
-        let wm_state_fullscreen = conn.intern_atom(false, b"_NET_WM_STATE_FULLSCREEN")?.reply()?.atom;
         let wm_type = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
         let wm_type_dock = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK")?.reply()?.atom;
 
@@ -375,16 +374,7 @@ impl PlatformBackend for X11Backend {
             win_id,
             wm_state,
             AtomEnum::ATOM,
-            &[wm_state_above, wm_state_fullscreen, wm_state_skip_taskbar, wm_state_skip_pager]
-        )?;
-
-        let motif_hints = conn.intern_atom(false, b"_MOTIF_WM_HINTS")?.reply()?.atom;
-        conn.change_property32(
-            PropMode::REPLACE,
-            win_id,
-            motif_hints,
-            motif_hints,
-            &[2, 0, 0, 0, 0] // 2 = MWM_HINTS_DECORATIONS, 0 = no decorations
+            &[wm_state_above, wm_state_skip_taskbar, wm_state_skip_pager]
         )?;
 
         let gc_id = conn.generate_id()?;
@@ -639,8 +629,11 @@ impl PlatformBackend for X11Backend {
                 Event::KeyPress(e) => {
                     let keysym = keycode_to_keysym(e.detail, e.state.into());
 
-                    // Check for Global Daemon Shortcut (Ctrl+Alt+A)
-                    if keycode_a > 0 && e.detail == keycode_a {
+                    // Check for Global Daemon Shortcut (Ctrl+Alt+A ONLY)
+                    let is_ctrl = (u16::from(e.state) & u16::from(ModMask::CONTROL)) != 0;
+                    let is_alt = (u16::from(e.state) & u16::from(ModMask::M1)) != 0;
+
+                    if keycode_a > 0 && e.detail == keycode_a && is_ctrl && is_alt {
                         self.passthrough = !self.passthrough;
                         println!("Global Shortcut Triggered (Ctrl+Alt+A): Passthrough={}", self.passthrough);
                         self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
