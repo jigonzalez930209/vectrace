@@ -252,6 +252,7 @@ pub struct Canvas {
     undo_stack: Vec<Command>,
     redo_stack: Vec<Command>,
     pub background_mode: BackgroundMode,
+    pub scale_factor: f32,
 }
 
 impl Canvas {
@@ -264,7 +265,12 @@ impl Canvas {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             background_mode: BackgroundMode::Transparent,
+            scale_factor: 1.0,
         }
+    }
+
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        self.scale_factor = scale.max(0.5);
     }
 
     pub fn cycle_background_mode(&mut self) -> BackgroundMode {
