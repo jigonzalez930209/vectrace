@@ -696,6 +696,7 @@ impl PlatformBackend for X11Backend {
 impl X11Backend {
     fn apply_passthrough(&self, conn: &impl Connection, win_id: u32, toolbar: &Toolbar) -> Result<(), Box<dyn Error>> {
         if self.passthrough {
+            let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let rect = Rectangle {
                 x: toolbar.x as i16,
                 y: toolbar.y as i16,
@@ -713,6 +714,13 @@ impl X11Backend {
                 &[rect],
             )?;
         } else {
+            let _ = conn.grab_keyboard(
+                false,
+                win_id,
+                Time::CURRENT_TIME,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            );
             let rect = Rectangle {
                 x: 0,
                 y: 0,

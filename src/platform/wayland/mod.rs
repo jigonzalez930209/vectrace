@@ -203,6 +203,8 @@ impl PlatformBackend for WaylandBackend {
 
         let mut state = WaylandState::new();
 
+        let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&qh, 1..=5, ())?;
+        let shm = globals.bind::<wl_shm::WlShm, _, _>(&qh, 1..=1, ())?;
         let layer_shell = match globals.bind::<ZwlrLayerShellV1, _, _>(&qh, 1..=4, ()) {
             Ok(ls) => ls,
             Err(e) => {
