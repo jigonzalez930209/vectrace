@@ -375,15 +375,21 @@ impl Canvas {
     }
 
     pub fn render_background(&self, pixmap: &mut tiny_skia::Pixmap) {
-        match self.background_mode {
-            BackgroundMode::Transparent => {
-                pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 0));
-            }
-            BackgroundMode::Blackboard => {
-                pixmap.fill(tiny_skia::Color::from_rgba8(24, 24, 28, 255));
-            }
-            BackgroundMode::Whiteboard => {
-                pixmap.fill(tiny_skia::Color::from_rgba8(250, 250, 250, 255));
+        let is_spotlight = self.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Spotlight);
+
+        if is_spotlight {
+            pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 180));
+        } else {
+            match self.background_mode {
+                BackgroundMode::Transparent => {
+                    pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 0));
+                }
+                BackgroundMode::Blackboard => {
+                    pixmap.fill(tiny_skia::Color::from_rgba8(24, 24, 28, 255));
+                }
+                BackgroundMode::Whiteboard => {
+                    pixmap.fill(tiny_skia::Color::from_rgba8(250, 250, 250, 255));
+                }
             }
         }
     }
@@ -549,7 +555,6 @@ fn render_laser_stroke(stroke: &Stroke, now_ms: u64, pixmap: &mut tiny_skia::Pix
     let max_age = 1200.0; // 1.2 seconds decay
     let points = &stroke.points;
 
-    // Group segments by average alpha to draw in batches
     let mut pb = tiny_skia::PathBuilder::new();
     let mut prev_pt: Option<Point> = None;
 
@@ -569,7 +574,6 @@ fn render_laser_stroke(stroke: &Stroke, now_ms: u64, pixmap: &mut tiny_skia::Pix
     }
 
     if let Some(path) = pb.finish() {
-        // Outer glow
         let mut glow_paint = tiny_skia::Paint::default();
         glow_paint.set_color(tiny_skia::Color::from_rgba8(stroke.color.r, stroke.color.g, stroke.color.b, 120));
         glow_paint.anti_alias = true;
@@ -581,7 +585,6 @@ fn render_laser_stroke(stroke: &Stroke, now_ms: u64, pixmap: &mut tiny_skia::Pix
 
         pixmap.stroke_path(&path, &glow_paint, &glow_stroke, tiny_skia::Transform::identity(), None);
 
-        // Core line
         let mut core_paint = tiny_skia::Paint::default();
         core_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 240));
         core_paint.anti_alias = true;
@@ -600,13 +603,6 @@ fn render_spotlight_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
         let cx = p.x;
         let cy = p.y;
         let r = stroke.width;
-
-        // Render dark overlay (70% opacity)
-        let mut dark_paint = tiny_skia::Paint::default();
-        dark_paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 180));
-        if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32) {
-            pixmap.fill_rect(rect, &dark_paint, tiny_skia::Transform::identity(), None);
-        }
 
         // Cut out circular spotlight
         let mut cpb = tiny_skia::PathBuilder::new();
@@ -632,7 +628,7 @@ fn render_spotlight_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
             ring_paint.anti_alias = true;
 
             let mut ring_stroke = tiny_skia::Stroke::default();
-            ring_stroke.width = 2.0;
+            ring_stroke.width = 3.0;
             pixmap.stroke_path(&cpath, &ring_paint, &ring_stroke, tiny_skia::Transform::identity(), None);
         }
     }
