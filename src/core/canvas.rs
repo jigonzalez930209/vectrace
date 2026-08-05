@@ -750,4 +750,13 @@ mod tests {
         assert_eq!(canvas.cycle_background_mode(), BackgroundMode::Whiteboard);
         assert_eq!(canvas.cycle_background_mode(), BackgroundMode::Transparent);
     }
+
+    #[test]
+    fn test_canvas_scale_factor() {
+        let mut canvas = Canvas::new(800, 600);
+        assert_eq!(canvas.scale_factor, 1.0);
+
+        canvas.set_scale_factor(2.0);
+        assert_eq!(canvas.scale_factor, 2.0);
+    }
 }
