@@ -25,6 +25,7 @@ pub struct X11Backend {
     x11_pixels: Vec<u8>,
     completed_strokes_dirty: bool,
     prev_spotlight_point: Option<Point>,
+    prev_shape_point: Option<Point>,
 }
 
 impl X11Backend {
@@ -39,6 +40,7 @@ impl X11Backend {
             x11_pixels: Vec::new(),
             completed_strokes_dirty: true,
             prev_spotlight_point: None,
+            prev_shape_point: None,
         }
     }
 }
@@ -54,11 +56,17 @@ fn find_32bit_visual(screen: &x11rb::protocol::xproto::Screen) -> Option<(x11rb:
     None
 }
 
-fn get_dirty_rect(canvas: &Canvas, screen_width: u16, screen_height: u16, prev_spotlight: Option<Point>) -> Option<Rectangle> {
+fn get_dirty_rect(
+    canvas: &Canvas,
+    screen_width: u16,
+    screen_height: u16,
+    prev_spotlight: Option<Point>,
+    prev_shape: Option<Point>,
+) -> Option<Rectangle> {
     if let Some(stroke) = canvas.current_stroke() {
         if stroke.stroke_type == StrokeType::Spotlight {
             if let Some(&p) = stroke.points.last() {
-                let r = stroke.width + 20.0;
+                let r = stroke.width + 25.0;
                 let mut min_x = p.x - r;
                 let mut max_x = p.x + r;
                 let mut min_y = p.y - r;
@@ -86,10 +94,80 @@ fn get_dirty_rect(canvas: &Canvas, screen_width: u16, screen_height: u16, prev_s
                     height: h,
                 });
             }
-        } else {
+        } else if stroke.stroke_type == StrokeType::Line
+            || stroke.stroke_type == StrokeType::Arrow
+            || stroke.stroke_type == StrokeType::Rectangle
+            || stroke.stroke_type == StrokeType::Oval
+        {
+            if stroke.points.len() >= 1 {
+                let p1 = stroke.points[0];
+                let p2 = *stroke.points.last().unwrap();
+                let mut min_x = f32::min(p1.x, p2.x);
+                let mut max_x = f32::max(p1.x, p2.x);
+                let mut min_y = f32::min(p1.y, p2.y);
+                let mut max_y = f32::max(p1.y, p2.y);
+
+                if let Some(prev) = prev_shape {
+                    min_x = f32::min(min_x, prev.x);
+                    max_x = f32::max(max_x, prev.x);
+                    min_y = f32::min(min_y, prev.y);
+                    max_y = f32::max(max_y, prev.y);
+                }
+
+                let pad = stroke.width * 4.0 + 35.0;
+                let x1 = (min_x - pad).max(0.0).floor() as i16;
+                let y1 = (min_y - pad).max(0.0).floor() as i16;
+                let x2 = (max_x + pad).min(screen_width as f32).ceil() as i16;
+                let y2 = (max_y + pad).min(screen_height as f32).ceil() as i16;
+
+                let w = (x2 - x1).max(1) as u16;
+                let h = (y2 - y1).max(1) as u16;
+
+                return Some(Rectangle {
+                    x: x1,
+                    y: y1,
+                    width: w,
+                    height: h,
+                });
+            }
+        } else if stroke.stroke_type == StrokeType::Freehand {
             let points = &stroke.points;
             let len = points.len();
-            if len >= 1 {
+            if len >= 2 {
+                let p_last = points[len - 1];
+                let p_prev = points[len - 2];
+                let mut min_x = f32::min(p_last.x, p_prev.x);
+                let mut max_x = f32::max(p_last.x, p_prev.x);
+                let mut min_y = f32::min(p_last.y, p_prev.y);
+                let mut max_y = f32::max(p_last.y, p_prev.y);
+
+                if len >= 3 {
+                    let p_prev2 = points[len - 3];
+                    min_x = f32::min(min_x, p_prev2.x);
+                    max_x = f32::max(max_x, p_prev2.x);
+                    min_y = f32::min(min_y, p_prev2.y);
+                    max_y = f32::max(max_y, p_prev2.y);
+                }
+
+                let pad = stroke.width + 25.0;
+                let x1 = (min_x - pad).max(0.0).floor() as i16;
+                let y1 = (min_y - pad).max(0.0).floor() as i16;
+                let x2 = (max_x + pad).min(screen_width as f32).ceil() as i16;
+                let y2 = (max_y + pad).min(screen_height as f32).ceil() as i16;
+
+                let w = (x2 - x1).max(1) as u16;
+                let h = (y2 - y1).max(1) as u16;
+
+                return Some(Rectangle {
+                    x: x1,
+                    y: y1,
+                    width: w,
+                    height: h,
+                });
+            }
+        } else {
+            let points = &stroke.points;
+            if !points.is_empty() {
                 let mut min_x = points[0].x;
                 let mut max_x = points[0].x;
                 let mut min_y = points[0].y;
@@ -139,7 +217,6 @@ fn keysym_to_char(keysym: u32) -> Option<char> {
 
 impl PlatformBackend for X11Backend {
     fn run(&mut self, canvas: &mut Canvas) -> Result<(), Box<dyn Error>> {
-        // 1. Connect to X11 server
         let (conn, screen_num) = x11rb::connect(None)?;
         let screen = &conn.setup().roots[screen_num];
         
@@ -272,7 +349,7 @@ impl PlatformBackend for X11Backend {
                             ev
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(16));
-                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None);
+                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                             continue;
                         }
@@ -293,11 +370,17 @@ impl PlatformBackend for X11Backend {
                         let click_x = e.event_x as f32;
                         let click_y = e.event_y as f32;
 
+                        // Ensure keyboard focus when interacting with Vectrace overlay
+                        let _ = conn.set_input_focus(InputFocus::PARENT, win_id, Time::CURRENT_TIME);
+                        let _ = conn.flush();
+
                         if let Some(action) = toolbar.handle_click(click_x, click_y) {
                             if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                 canvas.finish_current_stroke();
-                                self.completed_strokes_dirty = true;
                             }
+
+                            canvas.cancel_current_stroke();
+                            self.completed_strokes_dirty = true;
 
                             match action {
                                 ToolbarAction::SelectTool(tool) => {
@@ -314,12 +397,10 @@ impl PlatformBackend for X11Backend {
                                 }
                                 ToolbarAction::ToggleBackgroundMode => {
                                     let mode = canvas.cycle_background_mode();
-                                    self.completed_strokes_dirty = true;
                                     println!("Switched background mode to: {:?}", mode);
                                 }
                                 ToolbarAction::Clear => {
                                     canvas.clear();
-                                    self.completed_strokes_dirty = true;
                                     println!("Canvas cleared");
                                 }
                                 ToolbarAction::TogglePassthrough => {
@@ -334,6 +415,8 @@ impl PlatformBackend for X11Backend {
                             }
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                         } else if !self.passthrough {
+                            let now_ms = crate::core::canvas::current_time_ms();
+
                             if matches!(self.active_tool, Tool::Text { .. }) {
                                 if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                     canvas.finish_current_stroke();
@@ -341,29 +424,24 @@ impl PlatformBackend for X11Backend {
                                 }
                                 
                                 if let Some(mut stroke) = self.active_tool.create_stroke() {
-                                    stroke.points = vec![Point::new(click_x, click_y, 1.0, crate::core::canvas::current_time_ms())];
+                                    stroke.points = vec![Point::new(click_x, click_y, 1.0, now_ms)];
                                     canvas.start_stroke(stroke);
                                 }
                             } else {
                                 if let Some(stroke) = self.active_tool.create_stroke() {
                                     canvas.start_stroke(stroke);
-                                    canvas.add_point_to_current_stroke(Point::new(
-                                        click_x,
-                                        click_y,
-                                        1.0,
-                                        crate::core::canvas::current_time_ms(),
-                                    ));
+                                    canvas.add_point_to_current_stroke(Point::new(click_x, click_y, 1.0, now_ms));
                                 }
                             }
 
-                            let pad = 30;
-                            let rect = Rectangle {
-                                x: (click_x - pad as f32).max(0.0) as i16,
-                                y: (click_y - pad as f32).max(0.0) as i16,
-                                width: (pad * 2) as u16,
-                                height: (pad * 2) as u16,
-                            };
-                            self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, Some(rect))?;
+                            if matches!(self.active_tool, Tool::Spotlight { .. }) {
+                                self.completed_strokes_dirty = true;
+                                self.prev_spotlight_point = Some(Point::new(click_x, click_y, 1.0, now_ms));
+                                self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                            } else {
+                                let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
+                                self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
+                            }
                         }
                     }
                 }
@@ -389,7 +467,10 @@ impl PlatformBackend for X11Backend {
                         let now_ms = crate::core::canvas::current_time_ms();
 
                         let is_shape = if let Some(stroke) = canvas.current_stroke() {
-                            stroke.stroke_type != StrokeType::Freehand && stroke.stroke_type != StrokeType::Text && stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight
+                            stroke.stroke_type != StrokeType::Freehand
+                                && stroke.stroke_type != StrokeType::Text
+                                && stroke.stroke_type != StrokeType::Laser
+                                && stroke.stroke_type != StrokeType::Spotlight
                         } else {
                             false
                         };
@@ -408,28 +489,34 @@ impl PlatformBackend for X11Backend {
                             }
                             self.prev_spotlight_point = Some(new_pt);
 
-                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, old_pt);
+                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, old_pt, None);
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                         } else if is_shape {
+                            let old_shape_pt = self.prev_shape_point;
+                            let new_shape_pt = Point::new(last_x, last_y, 1.0, now_ms);
+
                             if let Some(stroke) = canvas.current_stroke_mut() {
                                 if stroke.points.len() >= 2 {
-                                    stroke.points[1] = Point::new(last_x, last_y, 1.0, now_ms);
+                                    stroke.points[1] = new_shape_pt;
                                 } else {
-                                    stroke.add_point(Point::new(last_x, last_y, 1.0, now_ms));
+                                    stroke.add_point(new_shape_pt);
                                 }
                             }
-                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None);
+                            self.prev_shape_point = Some(new_shape_pt);
+
+                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, old_shape_pt);
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                         } else {
                             canvas.add_point_to_current_stroke(Point::new(last_x, last_y, 1.0, now_ms));
-                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None);
+                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                         }
                     }
                 }
                 Event::ButtonRelease(e) => {
                     if e.detail == 1 && canvas.current_stroke().is_some() {
-                        if !matches!(self.active_tool, Tool::Text { .. }) {
+                        self.prev_shape_point = None;
+                        if !matches!(self.active_tool, Tool::Text { .. }) && !matches!(self.active_tool, Tool::Spotlight { .. }) {
                             canvas.finish_current_stroke();
                             self.completed_strokes_dirty = true;
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
@@ -455,7 +542,7 @@ impl PlatformBackend for X11Backend {
                                         text.pop();
                                     }
                                 }
-                                let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None);
+                                let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                             }
                             XK_ESCAPE => {
@@ -469,7 +556,7 @@ impl PlatformBackend for X11Backend {
                                         let text = stroke.text_content.get_or_insert_with(String::new);
                                         text.push(ch);
                                     }
-                                    let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None);
+                                    let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                                     self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                                 }
                             }
