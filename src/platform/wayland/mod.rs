@@ -1,16 +1,16 @@
-use crate::core::{Canvas, Point, StrokeType, Tool};
+use crate::core::{Canvas, Point, Tool, StrokeType};
 use crate::platform::PlatformBackend;
 use crate::ui::{Toolbar, ToolbarAction};
 use std::error::Error;
 use std::os::fd::AsFd;
 
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, delegate_noop,
+    delegate_noop,
     globals::GlobalListContents,
     protocol::{
-        wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm,
-        wl_shm_pool, wl_surface,
+        wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface
     },
+    Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
@@ -26,16 +26,16 @@ pub struct WaylandState {
     pub layer_surface: Option<ZwlrLayerSurfaceV1>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
-
+    
     pub configured: bool,
     pub width: u32,
     pub height: u32,
-
+    
     pub pointer_x: f64,
     pub pointer_y: f64,
     pub button_pressed: bool,
     pub last_button_time: u32,
-
+    
     pub pending_key: Option<(u32, u32)>, // keycode, state
 }
 
@@ -70,8 +70,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandState {
         _: &GlobalListContents,
         _: &Connection,
         _: &QueueHandle<Self>,
-    ) {
-    }
+    ) {}
 }
 
 impl Dispatch<ZwlrLayerSurfaceV1, ()> for WaylandState {
@@ -83,12 +82,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for WaylandState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwlr_layer_surface_v1::Event::Configure {
-            serial,
-            width,
-            height,
-        } = event
-        {
+        if let zwlr_layer_surface_v1::Event::Configure { serial, width, height } = event {
             layer_surface.ack_configure(serial);
             if width > 0 && height > 0 {
                 state.width = width;
@@ -109,20 +103,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Motion {
-                surface_x,
-                surface_y,
-                ..
-            } => {
+            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
                 state.pointer_x = surface_x;
                 state.pointer_y = surface_y;
             }
-            wl_pointer::Event::Button {
-                time,
-                button,
-                state: btn_state,
-                ..
-            } => {
+            wl_pointer::Event::Button { time, button, state: btn_state, .. } => {
                 if button == 272 {
                     state.button_pressed = match btn_state {
                         wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => true,
@@ -145,12 +130,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_keyboard::Event::Key {
-            key,
-            state: key_state,
-            ..
-        } = event
-        {
+        if let wl_keyboard::Event::Key { key, state: key_state, .. } = event {
             let is_pressed = match key_state {
                 wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed) => 1,
                 _ => 0,
@@ -179,16 +159,38 @@ fn create_shm_file(size: usize) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+fn detect_scale_factor() -> f32 {
+    if let Ok(val) = std::env::var("GDK_SCALE") {
+        if let Ok(scale) = val.parse::<f32>() {
+            return scale.max(1.0);
+        }
+    }
+    if let Ok(val) = std::env::var("QT_SCALE_FACTOR") {
+        if let Ok(scale) = val.parse::<f32>() {
+            return scale.max(1.0);
+        }
+    }
+    if let Ok(val) = std::env::var("VECTRACE_SCALE") {
+        if let Ok(scale) = val.parse::<f32>() {
+            return scale.max(1.0);
+        }
+    }
+    1.0
+}
+
 pub struct WaylandBackend {
     passthrough: bool,
     active_tool: Tool,
+    scale_factor: f32,
 }
 
 impl WaylandBackend {
     pub fn new() -> Self {
+        let scale_factor = detect_scale_factor();
         Self {
             passthrough: false,
             active_tool: Tool::default_pen(),
+            scale_factor,
         }
     }
 }
@@ -196,16 +198,21 @@ impl WaylandBackend {
 impl PlatformBackend for WaylandBackend {
     fn run(&mut self, canvas: &mut Canvas) -> Result<(), Box<dyn Error>> {
         let conn = Connection::connect_to_env()?;
-        let (globals, mut event_queue) =
-            wayland_client::globals::registry_queue_init::<WaylandState>(&conn)?;
+        let (globals, mut event_queue) = wayland_client::globals::registry_queue_init::<WaylandState>(&conn)?;
         let qh = event_queue.handle();
 
         let mut state = WaylandState::new();
 
-        let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&qh, 1..=5, ())?;
-        let shm = globals.bind::<wl_shm::WlShm, _, _>(&qh, 1..=1, ())?;
-        let layer_shell = globals.bind::<ZwlrLayerShellV1, _, _>(&qh, 1..=4, ())?;
-
+        let layer_shell = match globals.bind::<ZwlrLayerShellV1, _, _>(&qh, 1..=4, ()) {
+            Ok(ls) => ls,
+            Err(e) => {
+                println!("Wayland layer-shell extension is not supported by this compositor ({:?}).", e);
+                println!("Falling back to XWayland / X11 overlay backend...");
+                let mut x11_backend = crate::platform::x11::X11Backend::new();
+                return x11_backend.run(canvas);
+            }
+        };
+        
         if let Ok(seat) = globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=7, ()) {
             state.pointer = Some(seat.get_pointer(&qh, ()));
             state.keyboard = Some(seat.get_keyboard(&qh, ()));
@@ -243,14 +250,15 @@ impl PlatformBackend for WaylandBackend {
         let height = if state.height > 0 { state.height } else { 1080 };
 
         canvas.resize(width, height);
-        println!("Wayland Overlay initialized: {}x{}", width, height);
+        canvas.set_scale_factor(self.scale_factor);
+        println!("Wayland Multimonitor Overlay initialized: {}x{} (Scale: {:.1}x)", width, height, self.scale_factor);
 
-        let toolbar = Toolbar::new(width as f32);
+        let toolbar = Toolbar::new_with_scale(width as f32, self.scale_factor);
 
         let stride = (width * 4) as usize;
         let buffer_size = stride * height as usize;
         let shm_file = create_shm_file(buffer_size)?;
-
+        
         let pool = shm.create_pool(shm_file.as_fd(), buffer_size as i32, &qh, ());
         let wl_buf = pool.create_buffer(
             0,
@@ -288,10 +296,7 @@ impl PlatformBackend for WaylandBackend {
 
             if state.button_pressed && !prev_button_pressed {
                 if let Some(action) = toolbar.handle_click(cur_x, cur_y) {
-                    if canvas
-                        .current_stroke()
-                        .map_or(false, |s| s.stroke_type == StrokeType::Text)
-                    {
+                    if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                         canvas.finish_current_stroke();
                     }
 
@@ -319,13 +324,7 @@ impl PlatformBackend for WaylandBackend {
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
                             println!("Toggled Click-Through: {}", self.passthrough);
-                            apply_wayland_passthrough(
-                                &compositor,
-                                &surface,
-                                self.passthrough,
-                                &toolbar,
-                                &qh,
-                            );
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
                         }
                         ToolbarAction::Exit => {
                             println!("Exiting via toolbar...");
@@ -334,10 +333,7 @@ impl PlatformBackend for WaylandBackend {
                     }
                 } else if !self.passthrough {
                     if matches!(self.active_tool, Tool::Text { .. }) {
-                        if canvas
-                            .current_stroke()
-                            .map_or(false, |s| s.stroke_type == StrokeType::Text)
-                        {
+                        if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                             canvas.finish_current_stroke();
                         }
                         if let Some(mut stroke) = self.active_tool.create_stroke() {
@@ -347,25 +343,14 @@ impl PlatformBackend for WaylandBackend {
                     } else {
                         if let Some(stroke) = self.active_tool.create_stroke() {
                             canvas.start_stroke(stroke);
-                            canvas
-                                .add_point_to_current_stroke(Point::new(cur_x, cur_y, 1.0, now_ms));
+                            canvas.add_point_to_current_stroke(Point::new(cur_x, cur_y, 1.0, now_ms));
                         }
                     }
                 }
             } else if state.button_pressed && prev_button_pressed {
-                if canvas.current_stroke().is_some()
-                    && !self.passthrough
-                    && !matches!(self.active_tool, Tool::Text { .. })
-                {
-                    let is_shape = canvas.current_stroke().map_or(false, |s| {
-                        s.stroke_type != StrokeType::Freehand
-                            && s.stroke_type != StrokeType::Text
-                            && s.stroke_type != StrokeType::Laser
-                            && s.stroke_type != StrokeType::Spotlight
-                    });
-                    let is_spotlight = canvas
-                        .current_stroke()
-                        .map_or(false, |s| s.stroke_type == StrokeType::Spotlight);
+                if canvas.current_stroke().is_some() && !self.passthrough && !matches!(self.active_tool, Tool::Text { .. }) {
+                    let is_shape = canvas.current_stroke().map_or(false, |s| s.stroke_type != StrokeType::Freehand && s.stroke_type != StrokeType::Text && s.stroke_type != StrokeType::Laser && s.stroke_type != StrokeType::Spotlight);
+                    let is_spotlight = canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Spotlight);
 
                     if is_spotlight {
                         if let Some(stroke) = canvas.current_stroke_mut() {
@@ -384,9 +369,7 @@ impl PlatformBackend for WaylandBackend {
                     }
                 }
             } else if !state.button_pressed && prev_button_pressed {
-                if canvas.current_stroke().is_some()
-                    && !matches!(self.active_tool, Tool::Text { .. })
-                {
+                if canvas.current_stroke().is_some() && !matches!(self.active_tool, Tool::Text { .. }) {
                     canvas.finish_current_stroke();
                 }
             }
@@ -397,10 +380,7 @@ impl PlatformBackend for WaylandBackend {
                 if is_pressed == 1 {
                     match key_code {
                         1 => {
-                            if canvas
-                                .current_stroke()
-                                .map_or(false, |s| s.stroke_type == StrokeType::Text)
-                            {
+                            if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                 canvas.cancel_current_stroke();
                             } else {
                                 println!("Exiting...");
@@ -410,16 +390,9 @@ impl PlatformBackend for WaylandBackend {
                         57 => {
                             self.passthrough = !self.passthrough;
                             println!("Toggled Click-Through: {}", self.passthrough);
-                            apply_wayland_passthrough(
-                                &compositor,
-                                &surface,
-                                self.passthrough,
-                                &toolbar,
-                                &qh,
-                            );
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
                         }
                         48 => {
-                            // b key
                             let mode = canvas.cycle_background_mode();
                             println!("Switched background mode to: {:?}", mode);
                         }
@@ -438,10 +411,7 @@ impl PlatformBackend for WaylandBackend {
                             println!("Canvas cleared");
                         }
                         28 => {
-                            if canvas
-                                .current_stroke()
-                                .map_or(false, |s| s.stroke_type == StrokeType::Text)
-                            {
+                            if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                 canvas.finish_current_stroke();
                                 println!("Committed text");
                             }
@@ -454,14 +424,11 @@ impl PlatformBackend for WaylandBackend {
             canvas.render_background(&mut base_pixmap);
             canvas.render_completed_strokes(&mut base_pixmap);
             canvas.render_current_stroke(&mut base_pixmap);
-            toolbar.draw(
-                &mut base_pixmap,
-                self.active_tool,
-                self.passthrough,
-                canvas.background_mode,
-            );
+            toolbar.draw(&mut base_pixmap, self.active_tool, self.passthrough, canvas.background_mode);
 
-            let shm_slice = unsafe { std::slice::from_raw_parts_mut(mmap as *mut u8, buffer_size) };
+            let shm_slice = unsafe {
+                std::slice::from_raw_parts_mut(mmap as *mut u8, buffer_size)
+            };
             shm_slice.copy_from_slice(base_pixmap.data());
 
             surface.attach(Some(&wl_buf), 0, 0);

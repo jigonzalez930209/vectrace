@@ -6,7 +6,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     AtomEnum, ColormapAlloc, CreateWindowAux, CreateGCAux, EventMask, PropMode, WindowClass,
-    Rectangle, ImageFormat, ClipOrdering, ConnectionExt as _, InputFocus, Time,
+    Rectangle, ImageFormat, ClipOrdering, ConnectionExt as _, InputFocus, Time, ModMask, GrabMode,
 };
 use x11rb::protocol::shape::{
     SO as ShapeOp, SK as ShapeKind,
@@ -18,6 +18,7 @@ pub struct X11Backend {
     height: u16,
     passthrough: bool,
     active_tool: Tool,
+    scale_factor: f32,
     
     // Persistent buffers to prevent frame allocations
     base_pixmap: Option<tiny_skia::Pixmap>,
@@ -30,11 +31,13 @@ pub struct X11Backend {
 
 impl X11Backend {
     pub fn new() -> Self {
+        let scale_factor = detect_scale_factor();
         Self {
             width: 0,
             height: 0,
             passthrough: false,
             active_tool: Tool::default_pen(),
+            scale_factor,
             base_pixmap: None,
             active_pixmap: None,
             x11_pixels: Vec::new(),
@@ -43,6 +46,25 @@ impl X11Backend {
             prev_shape_point: None,
         }
     }
+}
+
+fn detect_scale_factor() -> f32 {
+    if let Ok(val) = std::env::var("GDK_SCALE") {
+        if let Ok(scale) = val.parse::<f32>() {
+            return scale.max(1.0);
+        }
+    }
+    if let Ok(val) = std::env::var("QT_SCALE_FACTOR") {
+        if let Ok(scale) = val.parse::<f32>() {
+            return scale.max(1.0);
+        }
+    }
+    if let Ok(val) = std::env::var("VECTRACE_SCALE") {
+        if let Ok(scale) = val.parse::<f32>() {
+            return scale.max(1.0);
+        }
+    }
+    1.0
 }
 
 fn find_32bit_visual(screen: &x11rb::protocol::xproto::Screen) -> Option<(x11rb::protocol::xproto::Visualid, u8)> {
@@ -215,6 +237,26 @@ fn keysym_to_char(keysym: u32) -> Option<char> {
     }
 }
 
+fn grab_global_hotkeys(conn: &impl Connection, root: u32, keycode_a: u8) {
+    let modifiers = [
+        u16::from(ModMask::CONTROL) | u16::from(ModMask::M1), // Ctrl + Alt
+        u16::from(ModMask::CONTROL) | u16::from(ModMask::M1) | u16::from(ModMask::LOCK),
+        u16::from(ModMask::CONTROL) | u16::from(ModMask::M1) | u16::from(ModMask::M2),
+        u16::from(ModMask::CONTROL) | u16::from(ModMask::M1) | u16::from(ModMask::LOCK) | u16::from(ModMask::M2),
+    ];
+
+    for &mod_mask in &modifiers {
+        let _ = conn.grab_key(
+            true,
+            root,
+            mod_mask.into(),
+            keycode_a,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        );
+    }
+}
+
 impl PlatformBackend for X11Backend {
     fn run(&mut self, canvas: &mut Canvas) -> Result<(), Box<dyn Error>> {
         let (conn, screen_num) = x11rb::connect(None)?;
@@ -223,10 +265,11 @@ impl PlatformBackend for X11Backend {
         self.width = screen.width_in_pixels;
         self.height = screen.height_in_pixels;
         canvas.resize(self.width as u32, self.height as u32);
+        canvas.set_scale_factor(self.scale_factor);
 
-        println!("X11 Screen Dimensions: {}x{}", self.width, self.height);
+        println!("X11 Virtual Desktop Dimensions: {}x{} (Scale: {:.1}x)", self.width, self.height, self.scale_factor);
 
-        let mut toolbar = Toolbar::new(self.width as f32);
+        let mut toolbar = Toolbar::new_with_scale(self.width as f32, self.scale_factor);
 
         let (visual_id, depth) = find_32bit_visual(screen)
             .unwrap_or((screen.root_visual, screen.root_depth));
@@ -321,6 +364,23 @@ impl PlatformBackend for X11Backend {
             }
         };
 
+        const XK_A_LOWER: u32 = 0x0061;
+        const XK_A_UPPER: u32 = 0x0041;
+        let mut keycode_a = 0u8;
+
+        for kc in min_keycode..=max_keycode {
+            let ks = keycode_to_keysym(kc, 0);
+            if ks == XK_A_LOWER || ks == XK_A_UPPER {
+                keycode_a = kc;
+                break;
+            }
+        }
+
+        if keycode_a > 0 {
+            grab_global_hotkeys(&conn, screen.root, keycode_a);
+            println!("Registered Global Daemon Shortcut: [Ctrl+Alt+A]");
+        }
+
         const XK_ESCAPE: u32 = 0xff1b;
         const XK_SPACE: u32 = 0x0020;
         const XK_BACKSPACE: u32 = 0xff08;
@@ -331,7 +391,7 @@ impl PlatformBackend for X11Backend {
         const XK_C: u32 = 0x0063;
         const XK_B: u32 = 0x0062;
 
-        println!("Controls:\n  [Space]  Toggle Click-Through\n  [U]      Undo last stroke\n  [R]      Redo last stroke\n  [C]      Clear canvas\n  [B]      Toggle Blackboard/Whiteboard\n  [ESC]    Exit application\n");
+        println!("Controls:\n  [Ctrl+Alt+A] Global Toggle Active/Passthrough\n  [Space]      Toggle Click-Through\n  [U]          Undo last stroke\n  [R]          Redo last stroke\n  [C]          Clear canvas\n  [B]          Toggle Blackboard/Whiteboard\n  [ESC]        Exit application\n");
 
         self.apply_passthrough(&conn, win_id, &toolbar)?;
 
@@ -370,7 +430,6 @@ impl PlatformBackend for X11Backend {
                         let click_x = e.event_x as f32;
                         let click_y = e.event_y as f32;
 
-                        // Ensure keyboard focus when interacting with Vectrace overlay
                         let _ = conn.set_input_focus(InputFocus::PARENT, win_id, Time::CURRENT_TIME);
                         let _ = conn.flush();
 
@@ -526,6 +585,15 @@ impl PlatformBackend for X11Backend {
                 Event::KeyPress(e) => {
                     let keysym = keycode_to_keysym(e.detail, e.state.into());
 
+                    // Check for Global Daemon Shortcut (Ctrl+Alt+A)
+                    if keycode_a > 0 && e.detail == keycode_a {
+                        self.passthrough = !self.passthrough;
+                        println!("Global Shortcut Triggered (Ctrl+Alt+A): Passthrough={}", self.passthrough);
+                        self.apply_passthrough(&conn, win_id, &toolbar)?;
+                        self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                        continue;
+                    }
+
                     let is_typing_text = canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text);
 
                     if is_typing_text {
@@ -608,7 +676,7 @@ impl PlatformBackend for X11Backend {
                         self.width = e.width;
                         self.height = e.height;
                         canvas.resize(self.width as u32, self.height as u32);
-                        toolbar = Toolbar::new(self.width as f32);
+                        toolbar = Toolbar::new_with_scale(self.width as f32, self.scale_factor);
                         
                         self.x11_pixels.clear();
                         self.completed_strokes_dirty = true;
