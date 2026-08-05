@@ -329,7 +329,7 @@ impl PlatformBackend for X11Backend {
             .colormap(colormap)
             .border_pixel(0)
             .background_pixel(0)
-            .override_redirect(1)
+            .override_redirect(0)
             .event_mask(
                 EventMask::EXPOSURE
                 | EventMask::BUTTON_PRESS
@@ -337,6 +337,7 @@ impl PlatformBackend for X11Backend {
                 | EventMask::POINTER_MOTION
                 | EventMask::KEY_PRESS
                 | EventMask::STRUCTURE_NOTIFY
+                | EventMask::FOCUS_CHANGE
             );
 
         conn.create_window(
@@ -357,6 +358,7 @@ impl PlatformBackend for X11Backend {
         let wm_state_above = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
         let wm_state_skip_taskbar = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?.reply()?.atom;
         let wm_state_skip_pager = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_PAGER")?.reply()?.atom;
+        let wm_state_fullscreen = conn.intern_atom(false, b"_NET_WM_STATE_FULLSCREEN")?.reply()?.atom;
         let wm_type = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
         let wm_type_dock = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK")?.reply()?.atom;
 
@@ -373,7 +375,16 @@ impl PlatformBackend for X11Backend {
             win_id,
             wm_state,
             AtomEnum::ATOM,
-            &[wm_state_above, wm_state_skip_taskbar, wm_state_skip_pager]
+            &[wm_state_above, wm_state_fullscreen, wm_state_skip_taskbar, wm_state_skip_pager]
+        )?;
+
+        let motif_hints = conn.intern_atom(false, b"_MOTIF_WM_HINTS")?.reply()?.atom;
+        conn.change_property32(
+            PropMode::REPLACE,
+            win_id,
+            motif_hints,
+            motif_hints,
+            &[2, 0, 0, 0, 0] // 2 = MWM_HINTS_DECORATIONS, 0 = no decorations
         )?;
 
         let gc_id = conn.generate_id()?;
@@ -483,6 +494,9 @@ impl PlatformBackend for X11Backend {
                             match action {
                                 ToolbarAction::SelectTool(tool) => {
                                     self.active_tool = tool;
+                                    if matches!(tool, Tool::Text { .. }) {
+                                        focus_x11_window(&conn, screen.root, win_id);
+                                    }
                                     println!("Selected tool: {:?}", tool);
                                 }
                                 ToolbarAction::SelectShape(kind) => {
@@ -634,9 +648,17 @@ impl PlatformBackend for X11Backend {
                         continue;
                     }
 
-                    let is_typing_text = canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text);
+                    let is_typing_text = matches!(self.active_tool, Tool::Text { .. });
 
                     if is_typing_text {
+                        if canvas.current_stroke().is_none() {
+                            let now_ms = crate::core::canvas::current_time_ms();
+                            if let Some(mut stroke) = self.active_tool.create_stroke() {
+                                stroke.points = vec![Point::new(self.width as f32 / 2.0, self.height as f32 / 2.0, 1.0, now_ms)];
+                                canvas.start_stroke(stroke);
+                            }
+                        }
+
                         match keysym {
                             XK_RETURN | XK_KP_ENTER => {
                                 canvas.finish_current_stroke();

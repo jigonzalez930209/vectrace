@@ -7,8 +7,8 @@ pub trait PlatformBackend {
 
 pub fn create_backend() -> Box<dyn PlatformBackend> {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        println!("WAYLAND_DISPLAY detected. Attempting Wayland backend...");
-        Box::new(wayland::WaylandBackend::new())
+        println!("WAYLAND_DISPLAY detected. Using XWayland 32-bit transparent overlay backend...");
+        Box::new(x11::X11Backend::new())
     } else {
         println!("Using X11 backend...");
         Box::new(x11::X11Backend::new())

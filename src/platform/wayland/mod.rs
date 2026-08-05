@@ -16,14 +16,21 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
 };
+use wayland_protocols::xdg::shell::client::{
+    xdg_wm_base::{self, XdgWmBase},
+    xdg_surface::{self, XdgSurface},
+    xdg_toplevel::{self, XdgToplevel},
+};
 
 pub struct WaylandState {
     pub compositor: Option<wl_compositor::WlCompositor>,
     pub shm: Option<wl_shm::WlShm>,
     pub layer_shell: Option<ZwlrLayerShellV1>,
+    pub xdg_wm_base: Option<XdgWmBase>,
     pub seat: Option<wl_seat::WlSeat>,
     pub surface: Option<wl_surface::WlSurface>,
     pub layer_surface: Option<ZwlrLayerSurfaceV1>,
+    pub xdg_toplevel: Option<XdgToplevel>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     
@@ -36,6 +43,7 @@ pub struct WaylandState {
     pub button_pressed: bool,
     pub last_button_time: u32,
     
+    pub shift_pressed: bool,
     pub pending_key: Option<(u32, u32)>, // keycode, state
 }
 
@@ -45,9 +53,11 @@ impl WaylandState {
             compositor: None,
             shm: None,
             layer_shell: None,
+            xdg_wm_base: None,
             seat: None,
             surface: None,
             layer_surface: None,
+            xdg_toplevel: None,
             pointer: None,
             keyboard: None,
             configured: false,
@@ -57,6 +67,7 @@ impl WaylandState {
             pointer_y: 0.0,
             button_pressed: false,
             last_button_time: 0,
+            shift_pressed: false,
             pending_key: None,
         }
     }
@@ -89,6 +100,55 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for WaylandState {
                 state.height = height;
             }
             state.configured = true;
+        }
+    }
+}
+
+impl Dispatch<XdgWmBase, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        wm_base: &XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<XdgSurface, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        xdg_surface: &XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            xdg_surface.ack_configure(serial);
+            state.configured = true;
+        }
+    }
+}
+
+impl Dispatch<XdgToplevel, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+            if width > 0 && height > 0 {
+                state.width = width as u32;
+                state.height = height as u32;
+            }
         }
     }
 }
@@ -135,6 +195,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                 wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed) => 1,
                 _ => 0,
             };
+            if key == 42 || key == 54 {
+                state.shift_pressed = is_pressed == 1;
+            }
             state.pending_key = Some((key, is_pressed));
         }
     }
@@ -178,6 +241,49 @@ fn detect_scale_factor() -> f32 {
     1.0
 }
 
+fn evdev_key_to_char(key: u32, shift: bool) -> Option<char> {
+    match (key, shift) {
+        (30, false) => Some('a'), (30, true) => Some('A'),
+        (48, false) => Some('b'), (48, true) => Some('B'),
+        (46, false) => Some('c'), (46, true) => Some('C'),
+        (32, false) => Some('d'), (32, true) => Some('D'),
+        (18, false) => Some('e'), (18, true) => Some('E'),
+        (33, false) => Some('f'), (33, true) => Some('F'),
+        (34, false) => Some('g'), (34, true) => Some('G'),
+        (35, false) => Some('h'), (35, true) => Some('H'),
+        (23, false) => Some('i'), (23, true) => Some('I'),
+        (36, false) => Some('j'), (36, true) => Some('J'),
+        (37, false) => Some('k'), (37, true) => Some('K'),
+        (38, false) => Some('l'), (38, true) => Some('L'),
+        (50, false) => Some('m'), (50, true) => Some('M'),
+        (49, false) => Some('n'), (49, true) => Some('N'),
+        (24, false) => Some('o'), (24, true) => Some('O'),
+        (25, false) => Some('p'), (25, true) => Some('P'),
+        (16, false) => Some('q'), (16, true) => Some('Q'),
+        (19, false) => Some('r'), (19, true) => Some('R'),
+        (31, false) => Some('s'), (31, true) => Some('S'),
+        (20, false) => Some('t'), (20, true) => Some('T'),
+        (22, false) => Some('u'), (22, true) => Some('U'),
+        (47, false) => Some('v'), (47, true) => Some('V'),
+        (17, false) => Some('w'), (17, true) => Some('W'),
+        (45, false) => Some('x'), (45, true) => Some('X'),
+        (21, false) => Some('y'), (21, true) => Some('Y'),
+        (44, false) => Some('z'), (44, true) => Some('Z'),
+        (57, _) => Some(' '),
+        (11, false) => Some('0'), (11, true) => Some(')'),
+        (2, false) => Some('1'), (2, true) => Some('!'),
+        (3, false) => Some('2'), (3, true) => Some('@'),
+        (4, false) => Some('3'), (4, true) => Some('#'),
+        (5, false) => Some('4'), (5, true) => Some('$'),
+        (6, false) => Some('5'), (6, true) => Some('%'),
+        (7, false) => Some('6'), (7, true) => Some('^'),
+        (8, false) => Some('7'), (8, true) => Some('&'),
+        (9, false) => Some('8'), (9, true) => Some('*'),
+        (10, false) => Some('9'), (10, true) => Some('('),
+        _ => None,
+    }
+}
+
 pub struct WaylandBackend {
     passthrough: bool,
     active_tool: Tool,
@@ -205,15 +311,6 @@ impl PlatformBackend for WaylandBackend {
 
         let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&qh, 1..=5, ())?;
         let shm = globals.bind::<wl_shm::WlShm, _, _>(&qh, 1..=1, ())?;
-        let layer_shell = match globals.bind::<ZwlrLayerShellV1, _, _>(&qh, 1..=4, ()) {
-            Ok(ls) => ls,
-            Err(e) => {
-                println!("Wayland layer-shell extension is not supported by this compositor ({:?}).", e);
-                println!("Falling back to XWayland / X11 overlay backend...");
-                let mut x11_backend = crate::platform::x11::X11Backend::new();
-                return x11_backend.run(canvas);
-            }
-        };
         
         if let Ok(seat) = globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=7, ()) {
             state.pointer = Some(seat.get_pointer(&qh, ()));
@@ -223,23 +320,38 @@ impl PlatformBackend for WaylandBackend {
 
         state.compositor = Some(compositor.clone());
         state.shm = Some(shm.clone());
-        state.layer_shell = Some(layer_shell.clone());
 
         let surface = compositor.create_surface(&qh, ());
         state.surface = Some(surface.clone());
 
-        let layer_surface = layer_shell.get_layer_surface(
-            &surface,
-            None,
-            zwlr_layer_shell_v1::Layer::Overlay,
-            "vectrace".to_string(),
-            &qh,
-            (),
-        );
-
-        layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
-        layer_surface.set_exclusive_zone(-1);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        if let Ok(layer_shell) = globals.bind::<ZwlrLayerShellV1, _, _>(&qh, 1..=4, ()) {
+            println!("Using native Wayland Layer-Shell protocol...");
+            let layer_surface = layer_shell.get_layer_surface(
+                &surface,
+                None,
+                zwlr_layer_shell_v1::Layer::Overlay,
+                "vectrace".to_string(),
+                &qh,
+                (),
+            );
+            layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+            layer_surface.set_exclusive_zone(-1);
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+            state.layer_shell = Some(layer_shell);
+            state.layer_surface = Some(layer_surface);
+        } else if let Ok(wm_base) = globals.bind::<XdgWmBase, _, _>(&qh, 1..=4, ()) {
+            println!("Using standard XDG Shell Wayland protocol (GNOME/KDE)...");
+            let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+            let xdg_toplevel = xdg_surface.get_toplevel(&qh, ());
+            xdg_toplevel.set_title("Vectrace Screen Marker".to_string());
+            xdg_toplevel.set_fullscreen(None);
+            state.xdg_wm_base = Some(wm_base);
+            state.xdg_toplevel = Some(xdg_toplevel);
+        } else {
+            println!("No supported Wayland protocol found. Falling back to XWayland...");
+            let mut x11 = crate::platform::x11::X11Backend::new();
+            return x11.run(canvas);
+        }
 
         surface.commit();
         event_queue.roundtrip(&mut state)?;
@@ -253,7 +365,7 @@ impl PlatformBackend for WaylandBackend {
 
         canvas.resize(width, height);
         canvas.set_scale_factor(self.scale_factor);
-        println!("Wayland Multimonitor Overlay initialized: {}x{} (Scale: {:.1}x)", width, height, self.scale_factor);
+        println!("Wayland Overlay initialized: {}x{} (Scale: {:.1}x)", width, height, self.scale_factor);
 
         let toolbar = Toolbar::new_with_scale(width as f32, self.scale_factor);
 
@@ -341,6 +453,7 @@ impl PlatformBackend for WaylandBackend {
                         if let Some(mut stroke) = self.active_tool.create_stroke() {
                             stroke.points = vec![Point::new(cur_x, cur_y, 1.0, now_ms)];
                             canvas.start_stroke(stroke);
+                            println!("Started Text stroke on Wayland at ({:.0}, {:.0})", cur_x, cur_y);
                         }
                     } else {
                         if let Some(stroke) = self.active_tool.create_stroke() {
@@ -380,45 +493,66 @@ impl PlatformBackend for WaylandBackend {
 
             if let Some((key_code, is_pressed)) = state.pending_key.take() {
                 if is_pressed == 1 {
-                    match key_code {
-                        1 => {
-                            if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
+                    let is_typing_text = canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text);
+
+                    if is_typing_text {
+                        match key_code {
+                            28 => { // Enter
+                                canvas.finish_current_stroke();
+                                println!("Committed text on Wayland");
+                            }
+                            14 => { // Backspace
+                                if let Some(stroke) = canvas.current_stroke_mut() {
+                                    if let Some(ref mut text) = stroke.text_content {
+                                        text.pop();
+                                    }
+                                }
+                            }
+                            1 => { // Escape
                                 canvas.cancel_current_stroke();
-                            } else {
+                                println!("Cancelled text on Wayland");
+                            }
+                            _ => {
+                                if let Some(ch) = evdev_key_to_char(key_code, state.shift_pressed) {
+                                    if let Some(stroke) = canvas.current_stroke_mut() {
+                                        let text = stroke.text_content.get_or_insert_with(String::new);
+                                        text.push(ch);
+                                        println!("Typed char on Wayland: {:?}", ch);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        match key_code {
+                            1 => { // Escape
                                 println!("Exiting...");
                                 break;
                             }
-                        }
-                        57 => {
-                            self.passthrough = !self.passthrough;
-                            println!("Toggled Click-Through: {}", self.passthrough);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
-                        }
-                        48 => {
-                            let mode = canvas.cycle_background_mode();
-                            println!("Switched background mode to: {:?}", mode);
-                        }
-                        22 => {
-                            if canvas.undo() {
-                                println!("Undo stroke");
+                            57 => { // Space
+                                self.passthrough = !self.passthrough;
+                                println!("Toggled Click-Through: {}", self.passthrough);
+                                apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
                             }
-                        }
-                        19 => {
-                            if canvas.redo() {
-                                println!("Redo stroke");
+                            48 => { // B
+                                let mode = canvas.cycle_background_mode();
+                                println!("Switched background mode to: {:?}", mode);
                             }
-                        }
-                        46 => {
-                            canvas.clear();
-                            println!("Canvas cleared");
-                        }
-                        28 => {
-                            if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
-                                canvas.finish_current_stroke();
-                                println!("Committed text");
+                            22 => { // U
+                                if canvas.undo() {
+                                    println!("Undo stroke");
+                                }
                             }
+                            19 => { // R
+                                if canvas.redo() {
+                                    println!("Redo stroke");
+                                }
+                            }
+                            46 => { // C
+                                canvas.clear();
+                                println!("Canvas cleared");
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
