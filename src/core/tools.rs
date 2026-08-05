@@ -75,13 +75,13 @@ impl Tool {
 
     pub fn default_laser() -> Self {
         Tool::Laser {
-            color: Color::new(255, 0, 100, 255),
-            width: 6.0,
+            color: Color::new(255, 0, 100, 255), // Neon pink/red
+            width: 8.0,
         }
     }
 
     pub fn default_spotlight() -> Self {
-        Tool::Spotlight { radius: 100.0 }
+        Tool::Spotlight { radius: 120.0 }
     }
 
     pub fn color(&self) -> Option<Color> {
@@ -136,11 +136,15 @@ impl Tool {
             Tool::Text { color, font_size } => {
                 Some(Stroke::new_text(*color, crate::core::Point::new(0.0, 0.0, 1.0, 0), String::new(), *font_size))
             }
-            Tool::Laser { color, width } => Some(Stroke::new(*color, *width, BlendMode::Normal)),
+            Tool::Laser { color, width } => {
+                Some(Stroke::new_shape(*color, *width, BlendMode::Normal, StrokeType::Laser))
+            }
+            Tool::Spotlight { radius } => {
+                Some(Stroke::new_shape(Color::new(0, 0, 0, 0), *radius, BlendMode::Normal, StrokeType::Spotlight))
+            }
             Tool::Eraser { width } => {
                 Some(Stroke::new(Color::new(0, 0, 0, 0), *width, BlendMode::Clear))
             }
-            Tool::Spotlight { .. } => None,
         }
     }
 }
