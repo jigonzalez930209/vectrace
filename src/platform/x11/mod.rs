@@ -257,6 +257,46 @@ fn grab_global_hotkeys(conn: &impl Connection, root: u32, keycode_a: u8) {
     }
 }
 
+fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
+    let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, win_id, Time::CURRENT_TIME);
+
+    if let Ok(net_active_win) = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW") {
+        if let Ok(reply) = net_active_win.reply() {
+            let event = x11rb::protocol::xproto::ClientMessageEvent {
+                response_type: x11rb::protocol::xproto::CLIENT_MESSAGE_EVENT,
+                format: 32,
+                sequence: 0,
+                window: win_id,
+                type_: reply.atom,
+                data: x11rb::protocol::xproto::ClientMessageData::from([
+                    1u32, // 1 = application request
+                    u32::from(Time::CURRENT_TIME),
+                    0u32, 0u32, 0u32
+                ]),
+            };
+            let _ = conn.send_event(
+                false,
+                root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            );
+        }
+    }
+
+    if let Ok(reply) = conn.grab_keyboard(
+        false,
+        win_id,
+        Time::CURRENT_TIME,
+        GrabMode::ASYNC,
+        GrabMode::ASYNC,
+    ) {
+        if let Ok(res) = reply.reply() {
+            println!("Focused & Grabbed Keyboard (Status: {:?})", res.status);
+        }
+    }
+    let _ = conn.flush();
+}
+
 impl PlatformBackend for X11Backend {
     fn run(&mut self, canvas: &mut Canvas) -> Result<(), Box<dyn Error>> {
         let (conn, screen_num) = x11rb::connect(None)?;
@@ -341,8 +381,7 @@ impl PlatformBackend for X11Backend {
 
         conn.map_window(win_id)?;
         
-        conn.set_input_focus(InputFocus::PARENT, win_id, Time::CURRENT_TIME)?;
-        conn.flush()?;
+        focus_x11_window(&conn, screen.root, win_id);
 
         let min_keycode = conn.setup().min_keycode;
         let max_keycode = conn.setup().max_keycode;
@@ -393,7 +432,7 @@ impl PlatformBackend for X11Backend {
 
         println!("Controls:\n  [Ctrl+Alt+A] Global Toggle Active/Passthrough\n  [Space]      Toggle Click-Through\n  [U]          Undo last stroke\n  [R]          Redo last stroke\n  [C]          Clear canvas\n  [B]          Toggle Blackboard/Whiteboard\n  [ESC]        Exit application\n");
 
-        self.apply_passthrough(&conn, win_id, &toolbar)?;
+        self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
 
         self.completed_strokes_dirty = true;
 
@@ -423,6 +462,7 @@ impl PlatformBackend for X11Backend {
 
             match event {
                 Event::Expose(_) => {
+                    focus_x11_window(&conn, screen.root, win_id);
                     self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                 }
                 Event::ButtonPress(e) => {
@@ -430,8 +470,7 @@ impl PlatformBackend for X11Backend {
                         let click_x = e.event_x as f32;
                         let click_y = e.event_y as f32;
 
-                        let _ = conn.set_input_focus(InputFocus::PARENT, win_id, Time::CURRENT_TIME);
-                        let _ = conn.flush();
+                        focus_x11_window(&conn, screen.root, win_id);
 
                         if let Some(action) = toolbar.handle_click(click_x, click_y) {
                             if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
@@ -465,7 +504,7 @@ impl PlatformBackend for X11Backend {
                                 ToolbarAction::TogglePassthrough => {
                                     self.passthrough = !self.passthrough;
                                     println!("Toggled Click-Through: {}", self.passthrough);
-                                    self.apply_passthrough(&conn, win_id, &toolbar)?;
+                                    self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                                 }
                                 ToolbarAction::Exit => {
                                     println!("Exiting via toolbar...");
@@ -485,6 +524,7 @@ impl PlatformBackend for X11Backend {
                                 if let Some(mut stroke) = self.active_tool.create_stroke() {
                                     stroke.points = vec![Point::new(click_x, click_y, 1.0, now_ms)];
                                     canvas.start_stroke(stroke);
+                                    println!("Started Text input at ({:.0}, {:.0})", click_x, click_y);
                                 }
                             } else {
                                 if let Some(stroke) = self.active_tool.create_stroke() {
@@ -589,7 +629,7 @@ impl PlatformBackend for X11Backend {
                     if keycode_a > 0 && e.detail == keycode_a {
                         self.passthrough = !self.passthrough;
                         println!("Global Shortcut Triggered (Ctrl+Alt+A): Passthrough={}", self.passthrough);
-                        self.apply_passthrough(&conn, win_id, &toolbar)?;
+                        self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                         self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                         continue;
                     }
@@ -623,6 +663,7 @@ impl PlatformBackend for X11Backend {
                                     if let Some(stroke) = canvas.current_stroke_mut() {
                                         let text = stroke.text_content.get_or_insert_with(String::new);
                                         text.push(ch);
+                                        println!("Typed char in text box: {:?}", ch);
                                     }
                                     let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                                     self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
@@ -638,7 +679,7 @@ impl PlatformBackend for X11Backend {
                             XK_SPACE => {
                                 self.passthrough = !self.passthrough;
                                 println!("Toggled Click-Through: {}", self.passthrough);
-                                self.apply_passthrough(&conn, win_id, &toolbar)?;
+                                self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                             }
                             XK_B => {
@@ -681,7 +722,7 @@ impl PlatformBackend for X11Backend {
                         self.x11_pixels.clear();
                         self.completed_strokes_dirty = true;
                         
-                        self.apply_passthrough(&conn, win_id, &toolbar)?;
+                        self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                         self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                     }
                 }
@@ -694,7 +735,7 @@ impl PlatformBackend for X11Backend {
 }
 
 impl X11Backend {
-    fn apply_passthrough(&self, conn: &impl Connection, win_id: u32, toolbar: &Toolbar) -> Result<(), Box<dyn Error>> {
+    fn apply_passthrough(&self, conn: &impl Connection, win_id: u32, root: u32, toolbar: &Toolbar) -> Result<(), Box<dyn Error>> {
         if self.passthrough {
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let rect = Rectangle {
@@ -714,13 +755,7 @@ impl X11Backend {
                 &[rect],
             )?;
         } else {
-            let _ = conn.grab_keyboard(
-                false,
-                win_id,
-                Time::CURRENT_TIME,
-                GrabMode::ASYNC,
-                GrabMode::ASYNC,
-            );
+            focus_x11_window(conn, root, win_id);
             let rect = Rectangle {
                 x: 0,
                 y: 0,
