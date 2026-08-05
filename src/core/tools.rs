@@ -50,7 +50,7 @@ impl Tool {
     pub fn default_highlighter() -> Self {
         Tool::Highlighter {
             color: Color::new(255, 255, 0, 128), // Yellow, semi-transparent
-            width: 20.0,
+            width: 24.0,
         }
     }
 
@@ -122,7 +122,8 @@ impl Tool {
                 if c.a == 255 {
                     c.a = 128;
                 }
-                Some(Stroke::new(c, *width, BlendMode::Multiply))
+                // Use BlendMode::Normal (SourceOver) for clean semi-transparent highlighter on transparent overlays
+                Some(Stroke::new(c, *width, BlendMode::Normal))
             }
             Tool::Shape { kind, color, width } => {
                 let stroke_type = match kind {
