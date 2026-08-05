@@ -1,10 +1,11 @@
-use crate::core::{Tool, Color, ShapeKind};
+use crate::core::{Tool, Color, ShapeKind, BackgroundMode};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToolbarAction {
     SelectTool(Tool),
     SelectShape(ShapeKind),
     SetColor(Color),
+    ToggleBackgroundMode,
     Clear,
     TogglePassthrough,
     Exit,
@@ -19,7 +20,7 @@ pub struct Toolbar {
 
 impl Toolbar {
     pub fn new(screen_width: f32) -> Self {
-        let width = 686.0;
+        let width = 780.0;
         let height = 48.0;
         let x = (screen_width - width) / 2.0;
         let y = 15.0;
@@ -34,28 +35,34 @@ impl Toolbar {
         let rx = click_x - self.x;
 
         // Tools
-        if rx >= 10.0 && rx < 50.0 {
+        if rx >= 10.0 && rx < 48.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_pen()));
         }
-        if rx >= 54.0 && rx < 94.0 {
+        if rx >= 52.0 && rx < 90.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_highlighter()));
         }
-        if rx >= 98.0 && rx < 138.0 {
+        if rx >= 94.0 && rx < 132.0 {
             return Some(ToolbarAction::SelectShape(ShapeKind::Line));
         }
-        if rx >= 142.0 && rx < 182.0 {
+        if rx >= 136.0 && rx < 174.0 {
             return Some(ToolbarAction::SelectShape(ShapeKind::Arrow));
         }
-        if rx >= 186.0 && rx < 226.0 {
+        if rx >= 178.0 && rx < 216.0 {
             return Some(ToolbarAction::SelectShape(ShapeKind::Rectangle));
         }
-        if rx >= 230.0 && rx < 270.0 {
+        if rx >= 220.0 && rx < 258.0 {
             return Some(ToolbarAction::SelectShape(ShapeKind::Oval));
         }
-        if rx >= 274.0 && rx < 314.0 {
+        if rx >= 262.0 && rx < 300.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_text()));
         }
-        if rx >= 318.0 && rx < 358.0 {
+        if rx >= 304.0 && rx < 342.0 {
+            return Some(ToolbarAction::SelectTool(Tool::default_laser()));
+        }
+        if rx >= 346.0 && rx < 384.0 {
+            return Some(ToolbarAction::SelectTool(Tool::default_spotlight()));
+        }
+        if rx >= 388.0 && rx < 426.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_eraser()));
         }
 
@@ -69,7 +76,7 @@ impl Toolbar {
             Color::new(30, 30, 30, 255),    // Black
         ];
 
-        let mut swatch_x = 372.0;
+        let mut swatch_x = 440.0;
         for color in &colors {
             if rx >= swatch_x && rx < swatch_x + 24.0 {
                 return Some(ToolbarAction::SetColor(*color));
@@ -78,20 +85,23 @@ impl Toolbar {
         }
 
         // Action Buttons
-        if rx >= 550.0 && rx < 590.0 {
+        if rx >= 618.0 && rx < 658.0 {
+            return Some(ToolbarAction::ToggleBackgroundMode);
+        }
+        if rx >= 662.0 && rx < 700.0 {
             return Some(ToolbarAction::Clear);
         }
-        if rx >= 594.0 && rx < 636.0 {
+        if rx >= 704.0 && rx < 742.0 {
             return Some(ToolbarAction::TogglePassthrough);
         }
-        if rx >= 640.0 && rx < 676.0 {
+        if rx >= 746.0 && rx < 776.0 {
             return Some(ToolbarAction::Exit);
         }
 
         None
     }
 
-    pub fn draw(&self, pixmap: &mut tiny_skia::Pixmap, active_tool: Tool, passthrough: bool) {
+    pub fn draw(&self, pixmap: &mut tiny_skia::Pixmap, active_tool: Tool, passthrough: bool, bg_mode: BackgroundMode) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform, LineCap, LineJoin};
 
         // Draw Toolbar background
@@ -99,7 +109,7 @@ impl Toolbar {
         self.add_rounded_rect(&mut pb, self.x, self.y, self.width, self.height, 12.0);
         if let Some(path) = pb.finish() {
             let mut paint = Paint::default();
-            paint.set_color(tiny_skia::Color::from_rgba8(20, 20, 25, 230));
+            paint.set_color(tiny_skia::Color::from_rgba8(20, 20, 25, 235));
             paint.anti_alias = true;
             pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
 
@@ -113,14 +123,16 @@ impl Toolbar {
 
         // Tool buttons configuration
         let tool_buttons = [
-            ("Pen", 10.0, 40.0),
-            ("High", 54.0, 40.0),
-            ("Line", 98.0, 40.0),
-            ("Arrow", 142.0, 40.0),
-            ("Rect", 186.0, 40.0),
-            ("Oval", 230.0, 40.0),
-            ("Text", 274.0, 40.0),
-            ("Eraser", 318.0, 40.0),
+            ("Pen", 10.0, 38.0),
+            ("High", 52.0, 38.0),
+            ("Line", 94.0, 38.0),
+            ("Arrow", 136.0, 38.0),
+            ("Rect", 178.0, 38.0),
+            ("Oval", 220.0, 38.0),
+            ("Text", 262.0, 38.0),
+            ("Laser", 304.0, 38.0),
+            ("Spotlight", 346.0, 38.0),
+            ("Eraser", 388.0, 38.0),
         ];
 
         for (name, bx, bw) in &tool_buttons {
@@ -132,6 +144,8 @@ impl Toolbar {
                 "Rect" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Rectangle, .. }),
                 "Oval" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Oval, .. }),
                 "Text" => matches!(active_tool, Tool::Text { .. }),
+                "Laser" => matches!(active_tool, Tool::Laser { .. }),
+                "Spotlight" => matches!(active_tool, Tool::Spotlight { .. }),
                 "Eraser" => matches!(active_tool, Tool::Eraser { .. }),
                 _ => false,
             };
@@ -248,6 +262,34 @@ impl Toolbar {
                         pixmap.stroke_path(&ipath, &icon_paint, &bold_stroke, Transform::identity(), None);
                     }
                 }
+                "Laser" => {
+                    let mut ipb = PathBuilder::new();
+                    ipb.move_to(cx - 6.0, cy + 6.0);
+                    ipb.line_to(cx + 4.0, cy - 4.0);
+                    ipb.move_to(cx + 4.0, cy - 4.0);
+                    ipb.line_to(cx + 8.0, cy - 8.0);
+                    if let Some(ipath) = ipb.finish() {
+                        let mut laser_paint = Paint::default();
+                        laser_paint.set_color(tiny_skia::Color::from_rgba8(255, 50, 120, 255));
+                        pixmap.stroke_path(&ipath, &laser_paint, &icon_stroke, Transform::identity(), None);
+                    }
+                }
+                "Spotlight" => {
+                    let mut ipb = PathBuilder::new();
+                    let r = 6.0;
+                    let kappa = 0.55228475;
+                    let ox = r * kappa;
+                    let oy = r * kappa;
+                    ipb.move_to(cx - r, cy);
+                    ipb.cubic_to(cx - r, cy - oy, cx - ox, cy - r, cx, cy - r);
+                    ipb.cubic_to(cx + ox, cy - r, cx + r, cy - oy, cx + r, cy);
+                    ipb.cubic_to(cx + r, cy + oy, cx + ox, cy + r, cx, cy + r);
+                    ipb.cubic_to(cx - ox, cy + r, cx - r, cy + oy, cx - r, cy);
+                    ipb.close();
+                    if let Some(ipath) = ipb.finish() {
+                        pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
+                    }
+                }
                 "Eraser" => {
                     let mut ipb = PathBuilder::new();
                     ipb.move_to(cx - 8.0, cy + 4.0);
@@ -265,8 +307,8 @@ impl Toolbar {
 
         // Draw Divider 1
         let mut div1 = PathBuilder::new();
-        div1.move_to(self.x + 364.0, self.y + 10.0);
-        div1.line_to(self.x + 364.0, self.y + 38.0);
+        div1.move_to(self.x + 432.0, self.y + 10.0);
+        div1.line_to(self.x + 432.0, self.y + 38.0);
         if let Some(path) = div1.finish() {
             let mut div_paint = Paint::default();
             div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
@@ -287,7 +329,7 @@ impl Toolbar {
 
         let active_color = active_tool.color();
 
-        let mut swatch_x = self.x + 372.0;
+        let mut swatch_x = self.x + 440.0;
         for c in &colors {
             let cx = swatch_x + 12.0;
             let cy = self.y + 24.0;
@@ -327,8 +369,8 @@ impl Toolbar {
 
         // Draw Divider 2
         let mut div2 = PathBuilder::new();
-        div2.move_to(self.x + 542.0, self.y + 10.0);
-        div2.line_to(self.x + 542.0, self.y + 38.0);
+        div2.move_to(self.x + 610.0, self.y + 10.0);
+        div2.line_to(self.x + 610.0, self.y + 38.0);
         if let Some(path) = div2.finish() {
             let mut div_paint = Paint::default();
             div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
@@ -337,16 +379,18 @@ impl Toolbar {
             pixmap.stroke_path(&path, &div_paint, &stroke, Transform::identity(), None);
         }
 
-        // Draw Action Buttons (Clear, Pass, Exit)
+        // Draw Action Buttons (Board, Clear, Pass, Exit)
         let action_buttons = [
-            ("Clear", 550.0, 40.0),
-            ("Pass", 594.0, 42.0),
-            ("Exit", 640.0, 36.0),
+            ("Board", 618.0, 40.0),
+            ("Clear", 662.0, 38.0),
+            ("Pass", 704.0, 38.0),
+            ("Exit", 746.0, 30.0),
         ];
 
         for (name, bx, bw) in &action_buttons {
             let is_active = match *name {
                 "Pass" => passthrough,
+                "Board" => bg_mode != BackgroundMode::Transparent,
                 _ => false,
             };
 
@@ -381,6 +425,17 @@ impl Toolbar {
             icon_stroke.line_join = LineJoin::Round;
 
             match *name {
+                "Board" => {
+                    let mut ipb = PathBuilder::new();
+                    ipb.move_to(cx - 7.0, cy - 6.0);
+                    ipb.line_to(cx + 7.0, cy - 6.0);
+                    ipb.line_to(cx + 7.0, cy + 6.0);
+                    ipb.line_to(cx - 7.0, cy + 6.0);
+                    ipb.close();
+                    if let Some(ipath) = ipb.finish() {
+                        pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
+                    }
+                }
                 "Clear" => {
                     let mut ipb = PathBuilder::new();
                     ipb.move_to(cx - 8.0, cy - 6.0);
