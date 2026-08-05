@@ -16,15 +16,21 @@ pub struct Toolbar {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    pub scale_factor: f32,
 }
 
 impl Toolbar {
     pub fn new(screen_width: f32) -> Self {
-        let width = 780.0;
-        let height = 48.0;
+        Self::new_with_scale(screen_width, 1.0)
+    }
+
+    pub fn new_with_scale(screen_width: f32, scale_factor: f32) -> Self {
+        let scale = scale_factor.max(0.5);
+        let width = 780.0 * scale;
+        let height = 48.0 * scale;
         let x = (screen_width - width) / 2.0;
-        let y = 15.0;
-        Self { x, y, width, height }
+        let y = 15.0 * scale;
+        Self { x, y, width, height, scale_factor: scale }
     }
 
     pub fn handle_click(&self, click_x: f32, click_y: f32) -> Option<ToolbarAction> {
@@ -32,7 +38,7 @@ impl Toolbar {
             return None;
         }
 
-        let rx = click_x - self.x;
+        let rx = (click_x - self.x) / self.scale_factor;
 
         // Tools
         if rx >= 10.0 && rx < 48.0 {
@@ -104,9 +110,11 @@ impl Toolbar {
     pub fn draw(&self, pixmap: &mut tiny_skia::Pixmap, active_tool: Tool, passthrough: bool, bg_mode: BackgroundMode) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform, LineCap, LineJoin};
 
+        let scale = self.scale_factor;
+
         // Draw Toolbar background
         let mut pb = PathBuilder::new();
-        self.add_rounded_rect(&mut pb, self.x, self.y, self.width, self.height, 12.0);
+        self.add_rounded_rect(&mut pb, self.x, self.y, self.width, self.height, 12.0 * scale);
         if let Some(path) = pb.finish() {
             let mut paint = Paint::default();
             paint.set_color(tiny_skia::Color::from_rgba8(20, 20, 25, 235));
@@ -117,7 +125,7 @@ impl Toolbar {
             border_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 45));
             border_paint.anti_alias = true;
             let mut stroke = Stroke::default();
-            stroke.width = 1.0;
+            stroke.width = 1.0 * scale;
             pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
         }
 
@@ -150,13 +158,13 @@ impl Toolbar {
                 _ => false,
             };
 
-            let x = self.x + bx;
-            let y = self.y + 6.0;
-            let w = *bw;
-            let h = 36.0;
+            let x = self.x + bx * scale;
+            let y = self.y + 6.0 * scale;
+            let w = *bw * scale;
+            let h = 36.0 * scale;
 
             let mut btn_pb = PathBuilder::new();
-            self.add_rounded_rect(&mut btn_pb, x, y, w, h, 8.0);
+            self.add_rounded_rect(&mut btn_pb, x, y, w, h, 8.0 * scale);
             if let Some(btn_path) = btn_pb.finish() {
                 let mut paint = Paint::default();
                 if is_active {
@@ -176,17 +184,17 @@ impl Toolbar {
             icon_paint.anti_alias = true;
 
             let mut icon_stroke = Stroke::default();
-            icon_stroke.width = 2.0;
+            icon_stroke.width = 2.0 * scale;
             icon_stroke.line_cap = LineCap::Round;
             icon_stroke.line_join = LineJoin::Round;
 
             match *name {
                 "Pen" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 7.0, cy + 5.0);
-                    ipb.line_to(cx + 5.0, cy - 7.0);
-                    ipb.line_to(cx + 7.0, cy - 5.0);
-                    ipb.line_to(cx - 5.0, cy + 7.0);
+                    ipb.move_to(cx - 7.0 * scale, cy + 5.0 * scale);
+                    ipb.line_to(cx + 5.0 * scale, cy - 7.0 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy - 5.0 * scale);
+                    ipb.line_to(cx - 5.0 * scale, cy + 7.0 * scale);
                     ipb.close();
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
@@ -194,40 +202,40 @@ impl Toolbar {
                 }
                 "High" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 7.0, cy + 7.0);
-                    ipb.line_to(cx + 5.0, cy - 5.0);
+                    ipb.move_to(cx - 7.0 * scale, cy + 7.0 * scale);
+                    ipb.line_to(cx + 5.0 * scale, cy - 5.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         let mut thick_stroke = icon_stroke.clone();
-                        thick_stroke.width = 5.0;
+                        thick_stroke.width = 5.0 * scale;
                         pixmap.stroke_path(&ipath, &icon_paint, &thick_stroke, Transform::identity(), None);
                     }
                 }
                 "Line" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 8.0, cy + 8.0);
-                    ipb.line_to(cx + 8.0, cy - 8.0);
+                    ipb.move_to(cx - 8.0 * scale, cy + 8.0 * scale);
+                    ipb.line_to(cx + 8.0 * scale, cy - 8.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
                 "Arrow" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 8.0, cy + 8.0);
-                    ipb.line_to(cx + 8.0, cy - 8.0);
-                    ipb.move_to(cx + 8.0, cy - 8.0);
-                    ipb.line_to(cx + 1.0, cy - 8.0);
-                    ipb.move_to(cx + 8.0, cy - 8.0);
-                    ipb.line_to(cx + 8.0, cy - 1.0);
+                    ipb.move_to(cx - 8.0 * scale, cy + 8.0 * scale);
+                    ipb.line_to(cx + 8.0 * scale, cy - 8.0 * scale);
+                    ipb.move_to(cx + 8.0 * scale, cy - 8.0 * scale);
+                    ipb.line_to(cx + 1.0 * scale, cy - 8.0 * scale);
+                    ipb.move_to(cx + 8.0 * scale, cy - 8.0 * scale);
+                    ipb.line_to(cx + 8.0 * scale, cy - 1.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
                 "Rect" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 7.0, cy - 7.0);
-                    ipb.line_to(cx + 7.0, cy - 7.0);
-                    ipb.line_to(cx + 7.0, cy + 7.0);
-                    ipb.line_to(cx - 7.0, cy + 7.0);
+                    ipb.move_to(cx - 7.0 * scale, cy - 7.0 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy - 7.0 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy + 7.0 * scale);
+                    ipb.line_to(cx - 7.0 * scale, cy + 7.0 * scale);
                     ipb.close();
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
@@ -235,8 +243,8 @@ impl Toolbar {
                 }
                 "Oval" => {
                     let mut ipb = PathBuilder::new();
-                    let rx = 7.0;
-                    let ry = 7.0;
+                    let rx = 7.0 * scale;
+                    let ry = 7.0 * scale;
                     let kappa = 0.55228475;
                     let ox = rx * kappa;
                     let oy = ry * kappa;
@@ -252,22 +260,22 @@ impl Toolbar {
                 }
                 "Text" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 7.0, cy - 7.0);
-                    ipb.line_to(cx + 7.0, cy - 7.0);
-                    ipb.move_to(cx, cy - 7.0);
-                    ipb.line_to(cx, cy + 7.0);
+                    ipb.move_to(cx - 7.0 * scale, cy - 7.0 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy - 7.0 * scale);
+                    ipb.move_to(cx, cy - 7.0 * scale);
+                    ipb.line_to(cx, cy + 7.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         let mut bold_stroke = icon_stroke.clone();
-                        bold_stroke.width = 2.5;
+                        bold_stroke.width = 2.5 * scale;
                         pixmap.stroke_path(&ipath, &icon_paint, &bold_stroke, Transform::identity(), None);
                     }
                 }
                 "Laser" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 6.0, cy + 6.0);
-                    ipb.line_to(cx + 4.0, cy - 4.0);
-                    ipb.move_to(cx + 4.0, cy - 4.0);
-                    ipb.line_to(cx + 8.0, cy - 8.0);
+                    ipb.move_to(cx - 6.0 * scale, cy + 6.0 * scale);
+                    ipb.line_to(cx + 4.0 * scale, cy - 4.0 * scale);
+                    ipb.move_to(cx + 4.0 * scale, cy - 4.0 * scale);
+                    ipb.line_to(cx + 8.0 * scale, cy - 8.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         let mut laser_paint = Paint::default();
                         laser_paint.set_color(tiny_skia::Color::from_rgba8(255, 50, 120, 255));
@@ -276,26 +284,34 @@ impl Toolbar {
                 }
                 "Spotlight" => {
                     let mut ipb = PathBuilder::new();
-                    let r = 6.0;
+                    let r = 5.0 * scale;
+                    let lcx = cx - 2.0 * scale;
+                    let lcy = cy - 2.0 * scale;
                     let kappa = 0.55228475;
                     let ox = r * kappa;
                     let oy = r * kappa;
-                    ipb.move_to(cx - r, cy);
-                    ipb.cubic_to(cx - r, cy - oy, cx - ox, cy - r, cx, cy - r);
-                    ipb.cubic_to(cx + ox, cy - r, cx + r, cy - oy, cx + r, cy);
-                    ipb.cubic_to(cx + r, cy + oy, cx + ox, cy + r, cx, cy + r);
-                    ipb.cubic_to(cx - ox, cy + r, cx - r, cy + oy, cx - r, cy);
+                    ipb.move_to(lcx - r, lcy);
+                    ipb.cubic_to(lcx - r, lcy - oy, lcx - ox, lcy - r, lcx, lcy - r);
+                    ipb.cubic_to(lcx + ox, lcy - r, lcx + r, lcy - oy, lcx + r, lcy);
+                    ipb.cubic_to(lcx + r, lcy + oy, lcx + ox, lcy + r, lcx, lcy + r);
+                    ipb.cubic_to(lcx - ox, lcy + r, lcx - r, lcy + oy, lcx - r, lcy);
                     ipb.close();
+
+                    ipb.move_to(lcx + 3.5 * scale, lcy + 3.5 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy + 7.0 * scale);
+
                     if let Some(ipath) = ipb.finish() {
-                        pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
+                        let mut loupe_stroke = icon_stroke.clone();
+                        loupe_stroke.width = 2.2 * scale;
+                        pixmap.stroke_path(&ipath, &icon_paint, &loupe_stroke, Transform::identity(), None);
                     }
                 }
                 "Eraser" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 8.0, cy + 4.0);
-                    ipb.line_to(cx - 2.0, cy - 6.0);
-                    ipb.line_to(cx + 8.0, cy - 6.0);
-                    ipb.line_to(cx + 2.0, cy + 4.0);
+                    ipb.move_to(cx - 8.0 * scale, cy + 4.0 * scale);
+                    ipb.line_to(cx - 2.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx + 8.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx + 2.0 * scale, cy + 4.0 * scale);
                     ipb.close();
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
@@ -307,13 +323,13 @@ impl Toolbar {
 
         // Draw Divider 1
         let mut div1 = PathBuilder::new();
-        div1.move_to(self.x + 432.0, self.y + 10.0);
-        div1.line_to(self.x + 432.0, self.y + 38.0);
+        div1.move_to(self.x + 432.0 * scale, self.y + 10.0 * scale);
+        div1.line_to(self.x + 432.0 * scale, self.y + 38.0 * scale);
         if let Some(path) = div1.finish() {
             let mut div_paint = Paint::default();
             div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
             let mut stroke = Stroke::default();
-            stroke.width = 1.0;
+            stroke.width = 1.0 * scale;
             pixmap.stroke_path(&path, &div_paint, &stroke, Transform::identity(), None);
         }
 
@@ -329,11 +345,11 @@ impl Toolbar {
 
         let active_color = active_tool.color();
 
-        let mut swatch_x = self.x + 440.0;
+        let mut swatch_x = self.x + 440.0 * scale;
         for c in &colors {
-            let cx = swatch_x + 12.0;
-            let cy = self.y + 24.0;
-            let r = 9.0;
+            let cx = swatch_x + 12.0 * scale;
+            let cy = self.y + 24.0 * scale;
+            let r = 9.0 * scale;
 
             let mut cpb = PathBuilder::new();
             let kappa = 0.55228475;
@@ -358,24 +374,24 @@ impl Toolbar {
                         border_p.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 220));
                         border_p.anti_alias = true;
                         let mut bstroke = Stroke::default();
-                        bstroke.width = 2.0;
+                        bstroke.width = 2.0 * scale;
                         pixmap.stroke_path(&cpath, &border_p, &bstroke, Transform::identity(), None);
                     }
                 }
             }
 
-            swatch_x += 28.0;
+            swatch_x += 28.0 * scale;
         }
 
         // Draw Divider 2
         let mut div2 = PathBuilder::new();
-        div2.move_to(self.x + 610.0, self.y + 10.0);
-        div2.line_to(self.x + 610.0, self.y + 38.0);
+        div2.move_to(self.x + 610.0 * scale, self.y + 10.0 * scale);
+        div2.line_to(self.x + 610.0 * scale, self.y + 38.0 * scale);
         if let Some(path) = div2.finish() {
             let mut div_paint = Paint::default();
             div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
             let mut stroke = Stroke::default();
-            stroke.width = 1.0;
+            stroke.width = 1.0 * scale;
             pixmap.stroke_path(&path, &div_paint, &stroke, Transform::identity(), None);
         }
 
@@ -394,13 +410,13 @@ impl Toolbar {
                 _ => false,
             };
 
-            let x = self.x + bx;
-            let y = self.y + 6.0;
-            let w = *bw;
-            let h = 36.0;
+            let x = self.x + bx * scale;
+            let y = self.y + 6.0 * scale;
+            let w = *bw * scale;
+            let h = 36.0 * scale;
 
             let mut btn_pb = PathBuilder::new();
-            self.add_rounded_rect(&mut btn_pb, x, y, w, h, 8.0);
+            self.add_rounded_rect(&mut btn_pb, x, y, w, h, 8.0 * scale);
             if let Some(btn_path) = btn_pb.finish() {
                 let mut paint = Paint::default();
                 if is_active {
@@ -420,17 +436,17 @@ impl Toolbar {
             icon_paint.anti_alias = true;
 
             let mut icon_stroke = Stroke::default();
-            icon_stroke.width = 2.0;
+            icon_stroke.width = 2.0 * scale;
             icon_stroke.line_cap = LineCap::Round;
             icon_stroke.line_join = LineJoin::Round;
 
             match *name {
                 "Board" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 7.0, cy - 6.0);
-                    ipb.line_to(cx + 7.0, cy - 6.0);
-                    ipb.line_to(cx + 7.0, cy + 6.0);
-                    ipb.line_to(cx - 7.0, cy + 6.0);
+                    ipb.move_to(cx - 7.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx + 7.0 * scale, cy + 6.0 * scale);
+                    ipb.line_to(cx - 7.0 * scale, cy + 6.0 * scale);
                     ipb.close();
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
@@ -438,12 +454,12 @@ impl Toolbar {
                 }
                 "Clear" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 8.0, cy - 6.0);
-                    ipb.line_to(cx + 8.0, cy - 6.0);
-                    ipb.move_to(cx - 6.0, cy - 4.0);
-                    ipb.line_to(cx - 4.0, cy + 8.0);
-                    ipb.line_to(cx + 4.0, cy + 8.0);
-                    ipb.line_to(cx + 6.0, cy - 4.0);
+                    ipb.move_to(cx - 8.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx + 8.0 * scale, cy - 6.0 * scale);
+                    ipb.move_to(cx - 6.0 * scale, cy - 4.0 * scale);
+                    ipb.line_to(cx - 4.0 * scale, cy + 8.0 * scale);
+                    ipb.line_to(cx + 4.0 * scale, cy + 8.0 * scale);
+                    ipb.line_to(cx + 6.0 * scale, cy - 4.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
@@ -451,20 +467,20 @@ impl Toolbar {
                 "Pass" => {
                     let mut ipb = PathBuilder::new();
                     if passthrough {
-                        ipb.move_to(cx - 5.0, cy - 7.0);
-                        ipb.line_to(cx - 5.0, cy + 7.0);
-                        ipb.line_to(cx - 1.0, cy + 2.0);
-                        ipb.line_to(cx + 4.0, cy + 7.0);
-                        ipb.line_to(cx + 6.0, cy + 5.0);
-                        ipb.line_to(cx + 1.0, cy + 0.0);
-                        ipb.line_to(cx + 5.0, cy - 2.0);
+                        ipb.move_to(cx - 5.0 * scale, cy - 7.0 * scale);
+                        ipb.line_to(cx - 5.0 * scale, cy + 7.0 * scale);
+                        ipb.line_to(cx - 1.0 * scale, cy + 2.0 * scale);
+                        ipb.line_to(cx + 4.0 * scale, cy + 7.0 * scale);
+                        ipb.line_to(cx + 6.0 * scale, cy + 5.0 * scale);
+                        ipb.line_to(cx + 1.0 * scale, cy + 0.0 * scale);
+                        ipb.line_to(cx + 5.0 * scale, cy - 2.0 * scale);
                         ipb.close();
                     } else {
-                        ipb.move_to(cx - 7.0, cy - 7.0);
-                        ipb.line_to(cx + 7.0, cy + 7.0);
-                        ipb.move_to(cx - 8.0, cy);
-                        ipb.quad_to(cx, cy - 5.0, cx + 8.0, cy);
-                        ipb.quad_to(cx, cy + 5.0, cx - 8.0, cy);
+                        ipb.move_to(cx - 7.0 * scale, cy - 7.0 * scale);
+                        ipb.line_to(cx + 7.0 * scale, cy + 7.0 * scale);
+                        ipb.move_to(cx - 8.0 * scale, cy);
+                        ipb.quad_to(cx, cy - 5.0 * scale, cx + 8.0 * scale, cy);
+                        ipb.quad_to(cx, cy + 5.0 * scale, cx - 8.0 * scale, cy);
                     }
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
@@ -472,10 +488,10 @@ impl Toolbar {
                 }
                 "Exit" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 6.0, cy - 6.0);
-                    ipb.line_to(cx + 6.0, cy + 6.0);
-                    ipb.move_to(cx + 6.0, cy - 6.0);
-                    ipb.line_to(cx - 6.0, cy + 6.0);
+                    ipb.move_to(cx - 6.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx + 6.0 * scale, cy + 6.0 * scale);
+                    ipb.move_to(cx + 6.0 * scale, cy - 6.0 * scale);
+                    ipb.line_to(cx - 6.0 * scale, cy + 6.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
@@ -495,5 +511,18 @@ impl Toolbar {
         pb.quad_to(x, y + h, x, y + h - r);
         pb.line_to(x, y + r);
         pb.quad_to(x, y, x + r, y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toolbar_hidpi_scaling() {
+        let tb = Toolbar::new_with_scale(1920.0, 2.0);
+        assert_eq!(tb.scale_factor, 2.0);
+        assert_eq!(tb.width, 780.0 * 2.0);
+        assert_eq!(tb.height, 48.0 * 2.0);
     }
 }
