@@ -26,7 +26,7 @@ impl Toolbar {
 
     pub fn new_with_scale(screen_width: f32, scale_factor: f32) -> Self {
         let scale = scale_factor.max(0.5);
-        let width = 780.0 * scale;
+        let width = 740.0 * scale;
         let height = 48.0 * scale;
         let x = (screen_width - width) / 2.0;
         let y = 15.0 * scale;
@@ -60,15 +60,12 @@ impl Toolbar {
             return Some(ToolbarAction::SelectShape(ShapeKind::Oval));
         }
         if rx >= 262.0 && rx < 300.0 {
-            return Some(ToolbarAction::SelectTool(Tool::default_text()));
-        }
-        if rx >= 304.0 && rx < 342.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_laser()));
         }
-        if rx >= 346.0 && rx < 384.0 {
+        if rx >= 304.0 && rx < 342.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_spotlight()));
         }
-        if rx >= 388.0 && rx < 426.0 {
+        if rx >= 346.0 && rx < 384.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_eraser()));
         }
 
@@ -82,7 +79,7 @@ impl Toolbar {
             Color::new(30, 30, 30, 255),    // Black
         ];
 
-        let mut swatch_x = 440.0;
+        let mut swatch_x = 398.0;
         for color in &colors {
             if rx >= swatch_x && rx < swatch_x + 24.0 {
                 return Some(ToolbarAction::SetColor(*color));
@@ -91,16 +88,16 @@ impl Toolbar {
         }
 
         // Action Buttons
-        if rx >= 618.0 && rx < 658.0 {
+        if rx >= 578.0 && rx < 618.0 {
             return Some(ToolbarAction::ToggleBackgroundMode);
         }
-        if rx >= 662.0 && rx < 700.0 {
+        if rx >= 622.0 && rx < 660.0 {
             return Some(ToolbarAction::Clear);
         }
-        if rx >= 704.0 && rx < 742.0 {
+        if rx >= 664.0 && rx < 702.0 {
             return Some(ToolbarAction::TogglePassthrough);
         }
-        if rx >= 746.0 && rx < 776.0 {
+        if rx >= 706.0 && rx < 734.0 {
             return Some(ToolbarAction::Exit);
         }
 
@@ -137,10 +134,9 @@ impl Toolbar {
             ("Arrow", 136.0, 38.0),
             ("Rect", 178.0, 38.0),
             ("Oval", 220.0, 38.0),
-            ("Text", 262.0, 38.0),
-            ("Laser", 304.0, 38.0),
-            ("Spotlight", 346.0, 38.0),
-            ("Eraser", 388.0, 38.0),
+            ("Laser", 262.0, 38.0),
+            ("Spotlight", 304.0, 38.0),
+            ("Eraser", 346.0, 38.0),
         ];
 
         for (name, bx, bw) in &tool_buttons {
@@ -151,7 +147,6 @@ impl Toolbar {
                 "Arrow" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Arrow, .. }),
                 "Rect" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Rectangle, .. }),
                 "Oval" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Oval, .. }),
-                "Text" => matches!(active_tool, Tool::Text { .. }),
                 "Laser" => matches!(active_tool, Tool::Laser { .. }),
                 "Spotlight" => matches!(active_tool, Tool::Spotlight { .. }),
                 "Eraser" => matches!(active_tool, Tool::Eraser { .. }),
@@ -258,18 +253,6 @@ impl Toolbar {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
-                "Text" => {
-                    let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 7.0 * scale, cy - 7.0 * scale);
-                    ipb.line_to(cx + 7.0 * scale, cy - 7.0 * scale);
-                    ipb.move_to(cx, cy - 7.0 * scale);
-                    ipb.line_to(cx, cy + 7.0 * scale);
-                    if let Some(ipath) = ipb.finish() {
-                        let mut bold_stroke = icon_stroke.clone();
-                        bold_stroke.width = 2.5 * scale;
-                        pixmap.stroke_path(&ipath, &icon_paint, &bold_stroke, Transform::identity(), None);
-                    }
-                }
                 "Laser" => {
                     let mut ipb = PathBuilder::new();
                     ipb.move_to(cx - 6.0 * scale, cy + 6.0 * scale);
@@ -323,8 +306,8 @@ impl Toolbar {
 
         // Draw Divider 1
         let mut div1 = PathBuilder::new();
-        div1.move_to(self.x + 432.0 * scale, self.y + 10.0 * scale);
-        div1.line_to(self.x + 432.0 * scale, self.y + 38.0 * scale);
+        div1.move_to(self.x + 390.0 * scale, self.y + 10.0 * scale);
+        div1.line_to(self.x + 390.0 * scale, self.y + 38.0 * scale);
         if let Some(path) = div1.finish() {
             let mut div_paint = Paint::default();
             div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
@@ -345,7 +328,7 @@ impl Toolbar {
 
         let active_color = active_tool.color();
 
-        let mut swatch_x = self.x + 440.0 * scale;
+        let mut swatch_x = self.x + 398.0 * scale;
         for c in &colors {
             let cx = swatch_x + 12.0 * scale;
             let cy = self.y + 24.0 * scale;
@@ -385,8 +368,8 @@ impl Toolbar {
 
         // Draw Divider 2
         let mut div2 = PathBuilder::new();
-        div2.move_to(self.x + 610.0 * scale, self.y + 10.0 * scale);
-        div2.line_to(self.x + 610.0 * scale, self.y + 38.0 * scale);
+        div2.move_to(self.x + 570.0 * scale, self.y + 10.0 * scale);
+        div2.line_to(self.x + 570.0 * scale, self.y + 38.0 * scale);
         if let Some(path) = div2.finish() {
             let mut div_paint = Paint::default();
             div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
@@ -397,10 +380,10 @@ impl Toolbar {
 
         // Draw Action Buttons (Board, Clear, Pass, Exit)
         let action_buttons = [
-            ("Board", 618.0, 40.0),
-            ("Clear", 662.0, 38.0),
-            ("Pass", 704.0, 38.0),
-            ("Exit", 746.0, 30.0),
+            ("Board", 578.0, 40.0),
+            ("Clear", 622.0, 38.0),
+            ("Pass", 664.0, 38.0),
+            ("Exit", 706.0, 28.0),
         ];
 
         for (name, bx, bw) in &action_buttons {
@@ -522,7 +505,7 @@ mod tests {
     fn test_toolbar_hidpi_scaling() {
         let tb = Toolbar::new_with_scale(1920.0, 2.0);
         assert_eq!(tb.scale_factor, 2.0);
-        assert_eq!(tb.width, 780.0 * 2.0);
+        assert_eq!(tb.width, 740.0 * 2.0);
         assert_eq!(tb.height, 48.0 * 2.0);
     }
 }
