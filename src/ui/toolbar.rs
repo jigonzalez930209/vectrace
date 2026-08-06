@@ -8,6 +8,8 @@ pub enum ToolbarAction {
     SetColor(Color),
     ToggleBackgroundMode,
     Clear,
+    SaveFull,
+    ConfirmCrop,
     TogglePassthrough,
     ToggleSettingsMenu,
     ToggleColorMenu,
@@ -32,7 +34,7 @@ impl Toolbar {
 
     pub fn new_with_scale(screen_width: f32, scale_factor: f32) -> Self {
         let scale = scale_factor.max(0.5);
-        let width = 660.0 * scale;
+        let width = 724.0 * scale;
         let height = 38.0 * scale;
         let x = (screen_width - width) / 2.0;
         let y = 12.0 * scale;
@@ -45,12 +47,13 @@ impl Toolbar {
         click_y: f32,
         show_settings_menu: bool,
         show_color_menu: bool,
+        has_crop_selection: bool,
     ) -> Option<ToolbarAction> {
         let scale = self.scale_factor;
 
         // Check if click is inside Color Popup Menu
         if show_color_menu {
-            let menu_x = self.x + 330.0 * scale;
+            let menu_x = self.x + 372.0 * scale;
             let menu_y = self.y + self.height + 6.0 * scale;
             let menu_w = 150.0 * scale;
             let menu_h = 110.0 * scale;
@@ -75,7 +78,7 @@ impl Toolbar {
 
         // Check if click is inside Settings Popup Menu
         if show_settings_menu {
-            let menu_x = self.x + 400.0 * scale;
+            let menu_x = self.x + 584.0 * scale;
             let menu_y = self.y + self.height + 6.0 * scale;
             let menu_w = 240.0 * scale;
             let menu_h = 130.0 * scale;
@@ -106,7 +109,7 @@ impl Toolbar {
             return Some(ToolbarAction::StartDrag);
         }
 
-        // Tools (rx 28..330)
+        // Tools (rx 28..364)
         if rx >= 28.0 && rx < 58.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_pen()));
         }
@@ -134,29 +137,39 @@ impl Toolbar {
         if rx >= 300.0 && rx < 330.0 {
             return Some(ToolbarAction::SelectTool(Tool::default_eraser()));
         }
+        if rx >= 334.0 && rx < 364.0 {
+            if has_crop_selection {
+                return Some(ToolbarAction::ConfirmCrop);
+            } else {
+                return Some(ToolbarAction::SelectTool(Tool::default_select_region()));
+            }
+        }
 
-        // Color Palette Button (rx 336..380)
-        if rx >= 336.0 && rx < 380.0 {
+        // Color Palette Button (rx 372..416)
+        if rx >= 372.0 && rx < 416.0 {
             return Some(ToolbarAction::ToggleColorMenu);
         }
 
-        // Action Buttons (rx 388..650)
-        if rx >= 388.0 && rx < 424.0 {
+        // Action Buttons (rx 424..710)
+        if rx >= 424.0 && rx < 460.0 {
+            return Some(ToolbarAction::SaveFull);
+        }
+        if rx >= 464.0 && rx < 500.0 {
             return Some(ToolbarAction::ToggleBackgroundMode);
         }
-        if rx >= 428.0 && rx < 464.0 {
+        if rx >= 504.0 && rx < 540.0 {
             return Some(ToolbarAction::Clear);
         }
-        if rx >= 468.0 && rx < 504.0 {
+        if rx >= 544.0 && rx < 580.0 {
             return Some(ToolbarAction::TogglePassthrough);
         }
-        if rx >= 508.0 && rx < 544.0 {
+        if rx >= 584.0 && rx < 620.0 {
             return Some(ToolbarAction::ToggleSettingsMenu);
         }
-        if rx >= 548.0 && rx < 584.0 {
+        if rx >= 624.0 && rx < 660.0 {
             return Some(ToolbarAction::MinimizeToTray);
         }
-        if rx >= 588.0 && rx < 618.0 {
+        if rx >= 664.0 && rx < 700.0 {
             return Some(ToolbarAction::Exit);
         }
 
@@ -189,6 +202,7 @@ impl Toolbar {
         show_settings_menu: bool,
         show_color_menu: bool,
         monitor_mode: MonitorMode,
+        has_crop_selection: bool,
     ) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform, LineCap, LineJoin};
 
@@ -211,26 +225,33 @@ impl Toolbar {
         }
 
         // 1. Draw Drag Grip Handle (⠿) at left
-        let grip_cx = self.x + 12.0 * scale;
-        let grip_cy = self.y + self.height / 2.0;
-        let mut grip_paint = Paint::default();
-        grip_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 120));
-        grip_paint.anti_alias = true;
+        let mut grip_pb = PathBuilder::new();
+        let gx = self.x + 10.0 * scale;
+        let gy = self.y + 12.0 * scale;
+        let dot_r = 1.2 * scale;
+        let col_w = 4.0 * scale;
+        let row_h = 4.5 * scale;
 
-        for dx in &[-3.0 * scale, 3.0 * scale] {
-            for dy in &[-6.0 * scale, 0.0, 6.0 * scale] {
-                let mut dot_pb = PathBuilder::new();
-                dot_pb.push_circle(grip_cx + dx, grip_cy + dy, 1.5 * scale);
-                if let Some(dot_path) = dot_pb.finish() {
-                    pixmap.fill_path(&dot_path, &grip_paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
-                }
+        for col in 0..2 {
+            for row in 0..3 {
+                let cx = gx + col as f32 * col_w;
+                let cy = gy + row as f32 * row_h;
+                grip_pb.push_circle(cx, cy, dot_r);
             }
         }
 
-        // Section Dividers
+        if let Some(path) = grip_pb.finish() {
+            let mut paint = Paint::default();
+            paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 120));
+            paint.anti_alias = true;
+            pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
+        }
+
+        // Dividers
         let mut div_paint = Paint::default();
         div_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 30));
-        let dividers = [24.0, 334.0, 384.0];
+
+        let dividers = [24.0, 368.0, 420.0];
         for dx in &dividers {
             let mut pb = PathBuilder::new();
             pb.move_to(self.x + dx * scale, self.y + 6.0 * scale);
@@ -242,7 +263,7 @@ impl Toolbar {
             }
         }
 
-        // 2. Draw Tool Buttons (9 tools)
+        // 2. Draw Tool Buttons (10 tools)
         let tools = [
             ("Pen", 28.0),
             ("Highlighter", 62.0),
@@ -253,6 +274,7 @@ impl Toolbar {
             ("Laser", 232.0),
             ("Spotlight", 266.0),
             ("Eraser", 300.0),
+            ("Crop", 334.0),
         ];
 
         for (name, bx) in &tools {
@@ -262,6 +284,7 @@ impl Toolbar {
                 "Laser" => matches!(active_tool, Tool::Laser { .. }),
                 "Spotlight" => matches!(active_tool, Tool::Spotlight { .. }),
                 "Eraser" => matches!(active_tool, Tool::Eraser { .. }),
+                "Crop" => matches!(active_tool, Tool::SelectRegion),
                 "Line" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Line, .. }),
                 "Arrow" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Arrow, .. }),
                 "Rectangle" => matches!(active_tool, Tool::Shape { kind: ShapeKind::Rectangle, .. }),
@@ -278,7 +301,9 @@ impl Toolbar {
             self.add_rounded_rect(&mut btn_pb, x, y, w, h, 6.0 * scale);
             if let Some(btn_path) = btn_pb.finish() {
                 let mut paint = Paint::default();
-                if is_active {
+                if *name == "Crop" && has_crop_selection {
+                    paint.set_color(tiny_skia::Color::from_rgba8(35, 185, 110, 240));
+                } else if is_active {
                     paint.set_color(tiny_skia::Color::from_rgba8(50, 120, 240, 220));
                 } else {
                     paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 12));
@@ -389,14 +414,51 @@ impl Toolbar {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
+                "Crop" => {
+                    if has_crop_selection {
+                        // Lucide Checkmark Icon (✓)
+                        let mut ipb = PathBuilder::new();
+                        ipb.move_to(cx - 5.0 * scale, cy + 0.5 * scale);
+                        ipb.line_to(cx - 1.5 * scale, cy + 4.5 * scale);
+                        ipb.line_to(cx + 5.5 * scale, cy - 4.5 * scale);
+                        if let Some(ipath) = ipb.finish() {
+                            let mut check_stroke = icon_stroke.clone();
+                            check_stroke.width = 2.4 * scale;
+                            pixmap.stroke_path(&ipath, &icon_paint, &check_stroke, Transform::identity(), None);
+                        }
+                    } else {
+                        // Lucide Selection / Crop Frame Icon
+                        let mut ipb = PathBuilder::new();
+                        let s = 5.0 * scale;
+                        ipb.move_to(cx - s, cy - s + 3.0 * scale);
+                        ipb.line_to(cx - s, cy - s);
+                        ipb.line_to(cx - s + 3.0 * scale, cy - s);
+
+                        ipb.move_to(cx + s - 3.0 * scale, cy - s);
+                        ipb.line_to(cx + s, cy - s);
+                        ipb.line_to(cx + s, cy - s + 3.0 * scale);
+
+                        ipb.move_to(cx - s, cy + s - 3.0 * scale);
+                        ipb.line_to(cx - s, cy + s);
+                        ipb.line_to(cx - s + 3.0 * scale, cy + s);
+
+                        ipb.move_to(cx + s - 3.0 * scale, cy + s);
+                        ipb.line_to(cx + s, cy + s);
+                        ipb.line_to(cx + s, cy + s - 3.0 * scale);
+
+                        if let Some(ipath) = ipb.finish() {
+                            pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
-        // 3. Draw Color Palette Button (🎨) at rx 336
-        let color_btn_x = self.x + 336.0 * scale;
+        // 3. Draw Color Palette Button (🎨) at rx 372
+        let color_btn_x = self.x + 372.0 * scale;
         let color_btn_y = self.y + 4.0 * scale;
-        let color_btn_w = 42.0 * scale;
+        let color_btn_w = 44.0 * scale;
         let color_btn_h = 30.0 * scale;
 
         let mut cb_pb = PathBuilder::new();
@@ -414,8 +476,7 @@ impl Toolbar {
 
         // Active Color Circle Indicator + Palette Dot
         let active_c = active_tool.color().unwrap_or(Color::new(235, 50, 50, 255));
-        let circle_cx = color_btn_x + 15.0 * scale;
-
+        let circle_cx = color_btn_x + 16.0 * scale;
         let circle_cy = color_btn_y + color_btn_h / 2.0;
 
         let mut circ_pb = PathBuilder::new();
@@ -435,7 +496,7 @@ impl Toolbar {
 
         // Palette Arrow Indicator
         let mut arr_pb = PathBuilder::new();
-        let arr_cx = color_btn_x + 30.0 * scale;
+        let arr_cx = color_btn_x + 32.0 * scale;
         arr_pb.move_to(arr_cx - 3.0 * scale, circle_cy - 2.0 * scale);
         arr_pb.line_to(arr_cx, circle_cy + 2.0 * scale);
         arr_pb.line_to(arr_cx + 3.0 * scale, circle_cy - 2.0 * scale);
@@ -450,14 +511,15 @@ impl Toolbar {
             pixmap.stroke_path(&arr_path, &apaint, &astroke, Transform::identity(), None);
         }
 
-        // 4. Draw Action Buttons (Board, Clear, Pass, Settings, Tray, Exit)
+        // 4. Draw Action Buttons (Save, Board, Clear, Pass, Settings, Tray, Exit)
         let action_buttons = [
-            ("Board", 388.0, 36.0),
-            ("Clear", 428.0, 36.0),
-            ("Pass", 468.0, 36.0),
-            ("Settings", 508.0, 36.0),
-            ("Tray", 548.0, 36.0),
-            ("Exit", 588.0, 30.0),
+            ("Save", 424.0, 36.0),
+            ("Board", 464.0, 36.0),
+            ("Clear", 504.0, 36.0),
+            ("Pass", 544.0, 36.0),
+            ("Settings", 584.0, 36.0),
+            ("Tray", 624.0, 36.0),
+            ("Exit", 664.0, 30.0),
         ];
 
         for (name, bx, bw) in &action_buttons {
@@ -499,6 +561,25 @@ impl Toolbar {
             icon_stroke.line_join = LineJoin::Round;
 
             match *name {
+                "Save" => {
+                    // Lucide Save / Diskette Icon
+                    let mut ipb = PathBuilder::new();
+                    ipb.move_to(cx - 5.0 * scale, cy - 5.0 * scale);
+                    ipb.line_to(cx + 3.0 * scale, cy - 5.0 * scale);
+                    ipb.line_to(cx + 5.0 * scale, cy - 3.0 * scale);
+                    ipb.line_to(cx + 5.0 * scale, cy + 5.0 * scale);
+                    ipb.line_to(cx - 5.0 * scale, cy + 5.0 * scale);
+                    ipb.close();
+
+                    ipb.move_to(cx - 3.0 * scale, cy + 5.0 * scale);
+                    ipb.line_to(cx - 3.0 * scale, cy + 1.0 * scale);
+                    ipb.line_to(cx + 3.0 * scale, cy + 1.0 * scale);
+                    ipb.line_to(cx + 3.0 * scale, cy + 5.0 * scale);
+
+                    if let Some(ipath) = ipb.finish() {
+                        pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
+                    }
+                }
                 "Board" => {
                     let mut ipb = PathBuilder::new();
                     ipb.move_to(cx - 6.0 * scale, cy - 5.0 * scale);
@@ -524,74 +605,42 @@ impl Toolbar {
                 }
                 "Pass" => {
                     let mut ipb = PathBuilder::new();
-                    if passthrough {
-                        ipb.move_to(cx - 4.0 * scale, cy - 6.0 * scale);
-                        ipb.line_to(cx - 4.0 * scale, cy + 6.0 * scale);
-                        ipb.line_to(cx - 1.0 * scale, cy + 2.0 * scale);
-                        ipb.line_to(cx + 3.0 * scale, cy + 6.0 * scale);
-                        ipb.line_to(cx + 5.0 * scale, cy + 4.0 * scale);
-                        ipb.line_to(cx + 1.0 * scale, cy + 0.0 * scale);
-                        ipb.line_to(cx + 4.0 * scale, cy - 2.0 * scale);
-                        ipb.close();
-                    } else {
-                        ipb.move_to(cx - 6.0 * scale, cy - 6.0 * scale);
-                        ipb.line_to(cx + 6.0 * scale, cy + 6.0 * scale);
-                        ipb.move_to(cx - 7.0 * scale, cy);
-                        ipb.quad_to(cx, cy - 4.0 * scale, cx + 7.0 * scale, cy);
-                        ipb.quad_to(cx, cy + 4.0 * scale, cx - 7.0 * scale, cy);
-                    }
+                    ipb.move_to(cx - 4.0 * scale, cy - 5.0 * scale);
+                    ipb.line_to(cx + 2.0 * scale, cy + 1.0 * scale);
+                    ipb.line_to(cx - 1.0 * scale, cy + 1.0 * scale);
+                    ipb.line_to(cx + 3.0 * scale, cy + 6.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
                 "Settings" => {
                     let mut ipb = PathBuilder::new();
-                    let r_in = 3.0 * scale;
-                    let r_out = 6.0 * scale;
-                    let kappa = 0.55228475;
-                    ipb.move_to(cx - r_in, cy);
-                    ipb.cubic_to(cx - r_in, cy - r_in * kappa, cx - r_in * kappa, cy - r_in, cx, cy - r_in);
-                    ipb.cubic_to(cx + r_in * kappa, cy - r_in, cx + r_in, cy - r_in * kappa, cx + r_in, cy);
-                    ipb.cubic_to(cx + r_in, cy + r_in * kappa, cx + r_in * kappa, cy + r_in, cx, cy + r_in);
-                    ipb.cubic_to(cx - r_in * kappa, cy + r_in, cx - r_in, cy + r_in * kappa, cx - r_in, cy);
-                    ipb.close();
-
+                    ipb.push_circle(cx, cy, 3.5 * scale);
                     for i in 0..6 {
                         let angle = (i as f32) * std::f32::consts::PI / 3.0;
-                        let dx = angle.cos() * r_out;
-                        let dy = angle.sin() * r_out;
-                        ipb.move_to(cx + dx * 0.6, cy + dy * 0.6);
-                        ipb.line_to(cx + dx, cy + dy);
+                        let r1 = 4.5 * scale;
+                        let r2 = 6.5 * scale;
+                        ipb.move_to(cx + r1 * angle.cos(), cy + r1 * angle.sin());
+                        ipb.line_to(cx + r2 * angle.cos(), cy + r2 * angle.sin());
                     }
-
                     if let Some(ipath) = ipb.finish() {
-                        let mut gear_stroke = icon_stroke.clone();
-                        gear_stroke.width = 1.6 * scale;
-                        pixmap.stroke_path(&ipath, &icon_paint, &gear_stroke, Transform::identity(), None);
+                        pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
                 "Tray" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 6.0 * scale, cy - 1.0 * scale);
-                    ipb.line_to(cx - 6.0 * scale, cy + 5.0 * scale);
-                    ipb.line_to(cx + 6.0 * scale, cy + 5.0 * scale);
-                    ipb.line_to(cx + 6.0 * scale, cy - 1.0 * scale);
-
-                    ipb.move_to(cx, cy - 5.0 * scale);
-                    ipb.line_to(cx, cy + 2.0 * scale);
-                    ipb.move_to(cx - 3.0 * scale, cy - 1.0 * scale);
-                    ipb.line_to(cx, cy + 2.5 * scale);
-                    ipb.line_to(cx + 3.0 * scale, cy - 1.0 * scale);
+                    ipb.move_to(cx - 5.0 * scale, cy + 4.0 * scale);
+                    ipb.line_to(cx + 5.0 * scale, cy + 4.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
                 }
                 "Exit" => {
                     let mut ipb = PathBuilder::new();
-                    ipb.move_to(cx - 5.0 * scale, cy - 5.0 * scale);
-                    ipb.line_to(cx + 5.0 * scale, cy + 5.0 * scale);
-                    ipb.move_to(cx + 5.0 * scale, cy - 5.0 * scale);
-                    ipb.line_to(cx - 5.0 * scale, cy + 5.0 * scale);
+                    ipb.move_to(cx - 4.0 * scale, cy - 4.0 * scale);
+                    ipb.line_to(cx + 4.0 * scale, cy + 4.0 * scale);
+                    ipb.move_to(cx + 4.0 * scale, cy - 4.0 * scale);
+                    ipb.line_to(cx - 4.0 * scale, cy + 4.0 * scale);
                     if let Some(ipath) = ipb.finish() {
                         pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
                     }
@@ -600,22 +649,21 @@ impl Toolbar {
             }
         }
 
-        // Draw Color Menu Popup if active
+        // Draw Popup Menus
         if show_color_menu {
-            self.draw_color_popup(pixmap, active_c);
+            self.draw_color_menu(pixmap);
         }
 
-        // Draw Settings Menu Popup if active
         if show_settings_menu {
-            self.draw_settings_popup(pixmap, monitor_mode, passthrough, bg_mode);
+            self.draw_settings_menu(pixmap, passthrough, bg_mode, monitor_mode);
         }
     }
 
-    fn draw_color_popup(&self, pixmap: &mut tiny_skia::Pixmap, active_c: Color) {
+    fn draw_color_menu(&self, pixmap: &mut tiny_skia::Pixmap) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
         let scale = self.scale_factor;
-        let menu_x = self.x + 330.0 * scale;
+        let menu_x = self.x + 372.0 * scale;
         let menu_y = self.y + self.height + 6.0 * scale;
         let menu_w = 150.0 * scale;
         let menu_h = 110.0 * scale;
@@ -628,61 +676,47 @@ impl Toolbar {
             paint.anti_alias = true;
             pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
 
-            let mut border = Paint::default();
-            border.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 50));
+            let mut border_paint = Paint::default();
+            border_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
             let mut stroke = Stroke::default();
             stroke.width = 1.0 * scale;
-            pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+            pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
         }
 
         let colors = Self::palette_colors();
         for (i, color) in colors.iter().enumerate() {
-            let row = i / 4;
-            let col = i % 4;
+            let row = (i / 4) as f32;
+            let col = (i % 4) as f32;
 
-            let cx = menu_x + (22.0 + (col as f32) * 34.0) * scale;
-            let cy = menu_y + (22.0 + (row as f32) * 32.0) * scale;
-            let radius = 11.0 * scale;
+            let cx = menu_x + 22.0 * scale + col * 34.0 * scale;
+            let cy = menu_y + 22.0 * scale + row * 32.0 * scale;
 
-            let mut c_pb = PathBuilder::new();
-            c_pb.push_circle(cx, cy, radius);
-            if let Some(c_path) = c_pb.finish() {
-                let mut c_paint = Paint::default();
-                c_paint.set_color(tiny_skia::Color::from_rgba8(color.r, color.g, color.b, color.a));
-                c_paint.anti_alias = true;
-                pixmap.fill_path(&c_path, &c_paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
+            let mut dot_pb = PathBuilder::new();
+            dot_pb.push_circle(cx, cy, 11.0 * scale);
+            if let Some(dot_path) = dot_pb.finish() {
+                let mut cpaint = Paint::default();
+                cpaint.set_color(tiny_skia::Color::from_rgba8(color.r, color.g, color.b, color.a));
+                cpaint.anti_alias = true;
+                pixmap.fill_path(&dot_path, &cpaint, tiny_skia::FillRule::Winding, Transform::identity(), None);
 
-                let is_selected = color.r == active_c.r && color.g == active_c.g && color.b == active_c.b;
-                let mut b_paint = Paint::default();
-                let mut b_stroke = Stroke::default();
-                if is_selected {
-                    b_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
-                    b_stroke.width = 2.5 * scale;
-                } else {
-                    b_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 80));
-                    b_stroke.width = 1.0 * scale;
-                }
-                pixmap.stroke_path(&c_path, &b_paint, &b_stroke, Transform::identity(), None);
+                let mut stroke = Stroke::default();
+                stroke.width = 1.0 * scale;
+                let mut bpaint = Paint::default();
+                bpaint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 120));
+                pixmap.stroke_path(&dot_path, &bpaint, &stroke, Transform::identity(), None);
             }
         }
     }
 
-    fn draw_settings_popup(
-        &self,
-        pixmap: &mut tiny_skia::Pixmap,
-        monitor_mode: MonitorMode,
-        passthrough: bool,
-        bg_mode: BackgroundMode,
-    ) {
+    fn draw_settings_menu(&self, pixmap: &mut tiny_skia::Pixmap, passthrough: bool, bg_mode: BackgroundMode, monitor_mode: MonitorMode) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
         let scale = self.scale_factor;
-        let menu_x = self.x + 400.0 * scale;
+        let menu_x = self.x + 584.0 * scale;
         let menu_y = self.y + self.height + 6.0 * scale;
         let menu_w = 240.0 * scale;
         let menu_h = 130.0 * scale;
 
-        // Popup background
         let mut pb = PathBuilder::new();
         self.add_rounded_rect(&mut pb, menu_x, menu_y, menu_w, menu_h, 8.0 * scale);
         if let Some(path) = pb.finish() {
@@ -691,35 +725,31 @@ impl Toolbar {
             paint.anti_alias = true;
             pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
 
-            let mut border = Paint::default();
-            border.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 50));
+            let mut border_paint = Paint::default();
+            border_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 40));
             let mut stroke = Stroke::default();
             stroke.width = 1.0 * scale;
-            pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+            pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
         }
 
-        // Items in Settings Menu
         let items = [
-            ("Display:", monitor_mode.label()),
-            ("Click Pass:", if passthrough { "Enabled" } else { "Disabled" }),
-            ("Background:", match bg_mode {
-                BackgroundMode::Transparent => "Transparent",
-                BackgroundMode::Blackboard => "Blackboard",
-                BackgroundMode::Whiteboard => "Whiteboard",
-            }),
+            ("Display Mode", match monitor_mode { MonitorMode::Primary => "Primary", MonitorMode::All => "All" }),
+            ("Click-Through", if passthrough { "ON" } else { "OFF" }),
+            ("Background", match bg_mode { BackgroundMode::Transparent => "Clear", BackgroundMode::Blackboard => "Black", BackgroundMode::Whiteboard => "White" }),
         ];
 
         let mut item_y = menu_y + 8.0 * scale;
+
         for (label, val) in &items {
             let mut row_pb = PathBuilder::new();
             self.add_rounded_rect(&mut row_pb, menu_x + 6.0 * scale, item_y, menu_w - 12.0 * scale, 34.0 * scale, 6.0 * scale);
             if let Some(row_path) = row_pb.finish() {
                 let mut row_paint = Paint::default();
-                row_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 20));
+                row_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 10));
+                row_paint.anti_alias = true;
                 pixmap.fill_path(&row_path, &row_paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
             }
 
-            // Render indicator box for setting item
             let mut ind_pb = PathBuilder::new();
             self.add_rounded_rect(&mut ind_pb, menu_x + 12.0 * scale, item_y + 7.0 * scale, 18.0 * scale, 18.0 * scale, 4.0 * scale);
             if let Some(ind_path) = ind_pb.finish() {
@@ -728,7 +758,6 @@ impl Toolbar {
                 pixmap.fill_path(&ind_path, &ind_paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
             }
 
-            // Render Label Text
             render_text_to_pixmap(
                 label,
                 menu_x + 38.0 * scale,
@@ -739,7 +768,6 @@ impl Toolbar {
                 pixmap,
             );
 
-            // Render Value Text
             render_text_to_pixmap(
                 val,
                 menu_x + 125.0 * scale,
@@ -749,8 +777,6 @@ impl Toolbar {
                 BlendMode::Normal,
                 pixmap,
             );
-
-
 
             item_y += 38.0 * scale;
         }
@@ -777,7 +803,7 @@ mod tests {
     fn test_toolbar_hidpi_scaling() {
         let tb = Toolbar::new_with_scale(1920.0, 2.0);
         assert_eq!(tb.scale_factor, 2.0);
-        assert_eq!(tb.width, 660.0 * 2.0);
+        assert_eq!(tb.width, 724.0 * 2.0);
         assert_eq!(tb.height, 38.0 * 2.0);
     }
 }
