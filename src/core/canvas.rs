@@ -30,6 +30,12 @@ fn get_system_font() -> &'static Option<fontdue::Font> {
             "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
             "/usr/share/fonts/noto/NotoSans-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            "/usr/share/fonts/gnu-free/FreeSans.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+            "/usr/share/fonts/roboto/hinted/Roboto-Regular.ttf",
+            "/usr/share/fonts/TTF/Roboto-Regular.ttf",
+            "/usr/share/fonts/gsfonts/NimbusSans-Regular.otf",
         ];
 
         for path in &font_paths {
@@ -42,6 +48,7 @@ fn get_system_font() -> &'static Option<fontdue::Font> {
         None
     })
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundMode {
@@ -640,7 +647,7 @@ fn render_spotlight_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
     }
 }
 
-fn render_text_to_pixmap(
+pub fn render_text_to_pixmap(
     text: &str,
     start_x: f32,
     start_y: f32,
@@ -649,6 +656,7 @@ fn render_text_to_pixmap(
     blend_mode: BlendMode,
     pixmap: &mut tiny_skia::Pixmap,
 ) {
+
     if let Some(font) = get_system_font() {
         let mut cur_x = start_x;
         let baseline_y = start_y + font_size * 0.8;
