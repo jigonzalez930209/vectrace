@@ -20,6 +20,10 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 rustix = { version = "0.38", features = ["shm", "mm", "fs", "std"] }
 ksni = "0.3"
 tokio = { version = "1", features = ["rt", "macros"] }
+zbus = "5.18"
+ashpd = "0.10"
+urlencoding = "2.1"
+pipewire = "0.8"
 signal-hook-registry = "1.4"
 
 [package.metadata.deb]
