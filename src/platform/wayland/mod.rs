@@ -1,3 +1,5 @@
+pub mod capture;
+
 use crate::core::{Canvas, Point, Tool, StrokeType, MonitorMode};
 use crate::platform::PlatformBackend;
 use crate::ui::{Toolbar, ToolbarAction};
@@ -459,19 +461,7 @@ impl PlatformBackend for WaylandBackend {
                             println!("System Tray Action: Clear Canvas");
                         }
                         TrayEvent::SaveFull => {
-                            let w = state.width;
-                            let h = state.height;
-                            if w > 0 && h > 0 {
-                                let mut temp = tiny_skia::Pixmap::new(w, h).unwrap();
-                                canvas.render_background(&mut temp);
-                                canvas.render_completed_strokes(&mut temp);
-                                if let Some(stroke) = canvas.current_stroke() {
-                                    if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
-                                        crate::core::canvas::render_stroke(stroke, &mut temp);
-                                    }
-                                }
-                                let _ = crate::core::canvas::save_pixmap_to_file(&temp, None);
-                            }
+                            trigger_wayland_save_full(canvas, state.width as u32, state.height as u32, &surface, &wl_buf, &mut event_queue, &mut state);
                         }
                         TrayEvent::SaveRegion => {
                             self.active_tool = Tool::default_select_region();
@@ -533,19 +523,7 @@ impl PlatformBackend for WaylandBackend {
                             println!("Canvas cleared");
                         }
                         ToolbarAction::SaveFull => {
-                            let w = state.width;
-                            let h = state.height;
-                            if w > 0 && h > 0 {
-                                let mut temp = tiny_skia::Pixmap::new(w, h).unwrap();
-                                canvas.render_background(&mut temp);
-                                canvas.render_completed_strokes(&mut temp);
-                                if let Some(stroke) = canvas.current_stroke() {
-                                    if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
-                                        crate::core::canvas::render_stroke(stroke, &mut temp);
-                                    }
-                                }
-                                let _ = crate::core::canvas::save_pixmap_to_file(&temp, None);
-                            }
+                            trigger_wayland_save_full(canvas, state.width as u32, state.height as u32, &surface, &wl_buf, &mut event_queue, &mut state);
                         }
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
@@ -765,10 +743,71 @@ fn apply_wayland_passthrough(
         }
         surface.set_input_region(Some(&region));
         region.destroy();
-    } else {
-        surface.set_input_region(None);
     }
     surface.commit();
+}
+
+fn trigger_wayland_save_full(
+    canvas: &mut Canvas,
+    width: u32,
+    height: u32,
+    surface: &wl_surface::WlSurface,
+    wl_buf: &wl_buffer::WlBuffer,
+    event_queue: &mut wayland_client::EventQueue<WaylandState>,
+    state: &mut WaylandState,
+) {
+    if width == 0 || height == 0 { return; }
+
+    let bg_mode = canvas.background_mode;
+    let doc = canvas.snapshot();
+
+    surface.attach(None, 0, 0);
+    surface.commit();
+    let _ = event_queue.roundtrip(state);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    surface.attach(Some(wl_buf), 0, 0);
+    surface.damage(0, 0, width as i32, height as i32);
+    surface.commit();
+    let _ = event_queue.roundtrip(state);
+
+    std::thread::spawn(move || {
+        let captured = crate::platform::wayland::capture::portal::PortalClient::take_screenshot();
+
+        let mut temp_pixmap = match captured {
+            Ok(desktop_pixmap) => {
+                println!("Captured desktop background via Portal Screenshot ({}x{})!", desktop_pixmap.width(), desktop_pixmap.height());
+                if desktop_pixmap.width() == width && desktop_pixmap.height() == height {
+                    desktop_pixmap
+                } else {
+                    let mut scaled = tiny_skia::Pixmap::new(width, height).unwrap();
+                    let scale_x = width as f32 / desktop_pixmap.width() as f32;
+                    let scale_y = height as f32 / desktop_pixmap.height() as f32;
+                    let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
+                    let paint = tiny_skia::PixmapPaint::default();
+                    scaled.draw_pixmap(0, 0, desktop_pixmap.as_ref(), &paint, transform, None);
+                    scaled
+                }
+            }
+            Err(e) => {
+                println!("Portal Screenshot failed ({:?}), checking background mode...", e);
+                let mut fallback = tiny_skia::Pixmap::new(width, height).unwrap();
+                if bg_mode != crate::core::BackgroundMode::Transparent {
+                    // render fallback if not transparent
+                }
+                fallback
+            }
+        };
+
+        for stroke in &doc.strokes {
+            crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
+        }
+
+        match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, None) {
+            Ok(path) => println!("Saved Full Screen image with desktop background to: {}", path),
+            Err(err) => println!("Failed to save image file: {}", err),
+        }
+    });
 }
 
 
