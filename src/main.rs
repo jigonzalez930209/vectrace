@@ -1,9 +1,5 @@
-mod core;
-mod platform;
-mod ui;
-
-use crate::core::Canvas;
-use crate::platform::create_backend;
+use vectrace::core::Canvas;
+use vectrace::platform::create_backend;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
