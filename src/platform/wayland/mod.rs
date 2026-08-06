@@ -1,8 +1,9 @@
-use crate::core::{Canvas, Point, Tool, StrokeType};
+use crate::core::{Canvas, Point, Tool, StrokeType, MonitorMode};
 use crate::platform::PlatformBackend;
 use crate::ui::{Toolbar, ToolbarAction};
 use std::error::Error;
 use std::os::fd::AsFd;
+
 
 use wayland_client::{
     delegate_noop,
@@ -284,10 +285,18 @@ fn evdev_key_to_char(key: u32, shift: bool) -> Option<char> {
     }
 }
 
+use crate::platform::tray::TrayEvent;
+use std::sync::mpsc::Receiver;
+
 pub struct WaylandBackend {
     passthrough: bool,
     active_tool: Tool,
     scale_factor: f32,
+    show_settings_menu: bool,
+    show_color_menu: bool,
+    monitor_mode: MonitorMode,
+    is_hidden: bool,
+    tray_rx: Option<Receiver<TrayEvent>>,
 }
 
 impl WaylandBackend {
@@ -297,9 +306,24 @@ impl WaylandBackend {
             passthrough: false,
             active_tool: Tool::default_pen(),
             scale_factor,
+            show_settings_menu: false,
+            show_color_menu: false,
+            monitor_mode: MonitorMode::Primary,
+            is_hidden: false,
+            tray_rx: None,
         }
     }
+
+
+
+    pub fn new_with_tray(tray_rx: Receiver<TrayEvent>) -> Self {
+        let mut backend = Self::new();
+        backend.tray_rx = Some(tray_rx);
+        backend
+    }
 }
+
+
 
 impl PlatformBackend for WaylandBackend {
     fn run(&mut self, canvas: &mut Canvas) -> Result<(), Box<dyn Error>> {
@@ -339,19 +363,17 @@ impl PlatformBackend for WaylandBackend {
             layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
             state.layer_shell = Some(layer_shell);
             state.layer_surface = Some(layer_surface);
-        } else if let Ok(wm_base) = globals.bind::<XdgWmBase, _, _>(&qh, 1..=4, ()) {
-            println!("Using standard XDG Shell Wayland protocol (GNOME/KDE)...");
-            let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-            let xdg_toplevel = xdg_surface.get_toplevel(&qh, ());
-            xdg_toplevel.set_title("Vectrace Screen Marker".to_string());
-            xdg_toplevel.set_fullscreen(None);
-            state.xdg_wm_base = Some(wm_base);
-            state.xdg_toplevel = Some(xdg_toplevel);
         } else {
-            println!("No supported Wayland protocol found. Falling back to XWayland...");
-            let mut x11 = crate::platform::x11::X11Backend::new();
+            println!("Layer Shell protocol not available on this compositor (e.g. GNOME Wayland). Falling back to XWayland 32-bit ARGB transparent overlay backend...");
+            let mut x11 = if let Some(rx) = self.tray_rx.take() {
+                crate::platform::x11::X11Backend::new_with_tray(rx)
+            } else {
+                crate::platform::x11::X11Backend::new()
+            };
             return x11.run(canvas);
         }
+
+
 
         surface.commit();
         event_queue.roundtrip(&mut state)?;
@@ -399,33 +421,87 @@ impl PlatformBackend for WaylandBackend {
 
         let mut prev_button_pressed = false;
 
-        apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
+        apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
 
         loop {
+            // Process any incoming TrayEvent messages from system tray
+            if let Some(ref rx) = self.tray_rx {
+                while let Ok(tray_event) = rx.try_recv() {
+                    match tray_event {
+                        TrayEvent::ToggleVisibility => {
+                            self.is_hidden = !self.is_hidden;
+                            self.passthrough = self.is_hidden;
+                            println!("System Tray Action: Toggle Visibility (is_hidden = {})", self.is_hidden);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                        }
+
+                        TrayEvent::ToggleSettingsMenu => {
+                            self.show_settings_menu = !self.show_settings_menu;
+                            println!("System Tray Action: Toggle Settings Menu = {}", self.show_settings_menu);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                        }
+                        TrayEvent::ToggleMonitorMode => {
+                            self.monitor_mode = self.monitor_mode.toggle();
+                            println!("System Tray Action: Toggle Monitor Mode = {:?}", self.monitor_mode);
+                        }
+                        TrayEvent::TogglePassthrough => {
+                            self.passthrough = !self.passthrough;
+                            println!("System Tray Action: Toggle Passthrough = {}", self.passthrough);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                        }
+
+                        TrayEvent::CycleBackground => {
+                            let mode = canvas.cycle_background_mode();
+                            println!("System Tray Action: Cycle Background = {:?}", mode);
+                        }
+                        TrayEvent::ClearCanvas => {
+                            canvas.clear();
+                            println!("System Tray Action: Clear Canvas");
+                        }
+                        TrayEvent::Exit => {
+                            println!("System Tray Action: Exit application");
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
             event_queue.dispatch_pending(&mut state)?;
+
 
             let cur_x = state.pointer_x as f32;
             let cur_y = state.pointer_y as f32;
             let now_ms = crate::core::canvas::current_time_ms();
 
             if state.button_pressed && !prev_button_pressed {
-                if let Some(action) = toolbar.handle_click(cur_x, cur_y) {
+                if let Some(action) = toolbar.handle_click(cur_x, cur_y, self.show_settings_menu, self.show_color_menu) {
                     if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                         canvas.finish_current_stroke();
                     }
 
                     match action {
+                        ToolbarAction::StartDrag => {}
                         ToolbarAction::SelectTool(tool) => {
                             self.active_tool = tool;
+                            self.show_color_menu = false;
                             println!("Selected tool: {:?}", tool);
                         }
                         ToolbarAction::SelectShape(kind) => {
                             self.active_tool = Tool::default_shape(kind);
+                            self.show_color_menu = false;
                             println!("Selected shape: {:?}", kind);
                         }
                         ToolbarAction::SetColor(color) => {
                             self.active_tool.set_color(color);
+                            self.show_color_menu = false;
                             println!("Set color: {:?}", color);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                        }
+                        ToolbarAction::ToggleColorMenu => {
+                            self.show_color_menu = !self.show_color_menu;
+                            self.show_settings_menu = false;
+                            println!("Toggled Color Menu: {}", self.show_color_menu);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleBackgroundMode => {
                             let mode = canvas.cycle_background_mode();
@@ -438,14 +514,32 @@ impl PlatformBackend for WaylandBackend {
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
                             println!("Toggled Click-Through: {}", self.passthrough);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
+                        ToolbarAction::ToggleSettingsMenu => {
+                            self.show_settings_menu = !self.show_settings_menu;
+                            println!("Toggled Settings Menu: {}", self.show_settings_menu);
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                        }
+                        ToolbarAction::ToggleMonitorMode => {
+                            self.monitor_mode = self.monitor_mode.toggle();
+                            println!("Switched Monitor Mode: {:?}", self.monitor_mode);
+                        }
+                        ToolbarAction::MinimizeToTray => {
+                            self.is_hidden = true;
+                            self.passthrough = true;
+                            println!("Minimized overlay to System Tray.");
+                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                        }
+
+
                         ToolbarAction::Exit => {
                             println!("Exiting via toolbar...");
                             break;
                         }
                     }
                 } else if !self.passthrough {
+
                     if matches!(self.active_tool, Tool::Text { .. }) {
                         if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                             canvas.finish_current_stroke();
@@ -531,7 +625,7 @@ impl PlatformBackend for WaylandBackend {
                             57 => { // Space
                                 self.passthrough = !self.passthrough;
                                 println!("Toggled Click-Through: {}", self.passthrough);
-                                apply_wayland_passthrough(&compositor, &surface, self.passthrough, &toolbar, &qh);
+                                apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                             }
                             48 => { // B
                                 let mode = canvas.cycle_background_mode();
@@ -560,12 +654,30 @@ impl PlatformBackend for WaylandBackend {
             canvas.render_background(&mut base_pixmap);
             canvas.render_completed_strokes(&mut base_pixmap);
             canvas.render_current_stroke(&mut base_pixmap);
-            toolbar.draw(&mut base_pixmap, self.active_tool, self.passthrough, canvas.background_mode);
+            toolbar.draw(
+                &mut base_pixmap,
+                self.active_tool,
+                self.passthrough,
+                canvas.background_mode,
+                self.show_settings_menu,
+                self.show_color_menu,
+                self.monitor_mode,
+            );
+
 
             let shm_slice = unsafe {
                 std::slice::from_raw_parts_mut(mmap as *mut u8, buffer_size)
             };
-            shm_slice.copy_from_slice(base_pixmap.data());
+            let src = base_pixmap.data();
+            let pixel_count = (width * height) as usize;
+            for p in 0..pixel_count {
+                let s = p * 4;
+                shm_slice[s] = src[s + 2];     // B
+                shm_slice[s + 1] = src[s + 1]; // G
+                shm_slice[s + 2] = src[s];     // R
+                shm_slice[s + 3] = src[s + 3]; // A
+            }
+
 
             surface.attach(Some(&wl_buf), 0, 0);
             surface.damage_buffer(0, 0, width as i32, height as i32);
@@ -587,6 +699,8 @@ fn apply_wayland_passthrough(
     compositor: &wl_compositor::WlCompositor,
     surface: &wl_surface::WlSurface,
     passthrough: bool,
+    show_settings_menu: bool,
+    show_color_menu: bool,
     toolbar: &Toolbar,
     qh: &QueueHandle<WaylandState>,
 ) {
@@ -598,6 +712,20 @@ fn apply_wayland_passthrough(
             toolbar.width as i32,
             toolbar.height as i32,
         );
+        if show_color_menu {
+            let menu_x = toolbar.x + 330.0 * toolbar.scale_factor;
+            let menu_y = toolbar.y + toolbar.height + 6.0 * toolbar.scale_factor;
+            let menu_w = 150.0 * toolbar.scale_factor;
+            let menu_h = 110.0 * toolbar.scale_factor;
+            region.add(menu_x as i32, menu_y as i32, menu_w as i32, menu_h as i32);
+        }
+        if show_settings_menu {
+            let menu_x = toolbar.x + 400.0 * toolbar.scale_factor;
+            let menu_y = toolbar.y + toolbar.height + 6.0 * toolbar.scale_factor;
+            let menu_w = 240.0 * toolbar.scale_factor;
+            let menu_h = 130.0 * toolbar.scale_factor;
+            region.add(menu_x as i32, menu_y as i32, menu_w as i32, menu_h as i32);
+        }
         surface.set_input_region(Some(&region));
         region.destroy();
     } else {
@@ -605,3 +733,5 @@ fn apply_wayland_passthrough(
     }
     surface.commit();
 }
+
+
