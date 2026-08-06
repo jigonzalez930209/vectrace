@@ -1,7 +1,6 @@
 use crate::snapshot::error::{CaptureError, CaptureErrorKind};
 use crate::snapshot::request::{CaptureRequest, CaptureTarget, CursorPolicy};
 use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
-use ashpd::desktop::screenshot::Screenshot;
 use ashpd::desktop::PersistMode;
 use std::os::fd::OwnedFd;
 use std::sync::OnceLock;
@@ -153,47 +152,54 @@ impl PortalClient {
     }
 
     pub fn take_screenshot() -> Result<tiny_skia::Pixmap, CaptureError> {
-        let rt = get_portal_runtime();
+        let storage = crate::platform::wayland::capture::RestoreTokenStorage::new();
+        let restore_token = storage.load_token();
 
-        rt.block_on(async {
-            let response = Screenshot::request()
-                .interactive(false)
-                .send()
-                .await
-                .map_err(|e| {
-                    CaptureError::new(
-                        CaptureErrorKind::PortalBackendMissing,
-                        format!("Screenshot request failed: {}", e),
-                    )
-                })?
-                .response()
-                .map_err(|e| {
-                    CaptureError::new(
-                        CaptureErrorKind::PermissionDenied,
-                        format!("Screenshot permission denied: {}", e),
-                    )
-                })?;
+        let req = CaptureRequest {
+            target: CaptureTarget::PrimaryMonitor,
+            cursor: CursorPolicy::Hidden,
+            ..Default::default()
+        };
 
-            let uri = response.uri();
-            let raw_path = uri.as_str().trim_start_matches("file://");
-            let path_str = urlencoding::decode(raw_path).unwrap_or(std::borrow::Cow::Borrowed(raw_path));
+        let mut client = PortalClient::new();
+        match client.start_screencast_session(&req, restore_token.as_deref()) {
+            Ok(res) => {
+                if let Some(ref new_token) = res.restore_token {
+                    storage.save_token(new_token);
+                }
 
-            let bytes = std::fs::read(path_str.as_ref()).map_err(|e| {
-                CaptureError::new(
-                    CaptureErrorKind::Io,
-                    format!("Failed to read screenshot file from {}: {}", path_str, e),
-                )
-            })?;
+                if let Some(stream) = res.streams.first() {
+                    let node_id = stream.node_id;
+                    let (w, h) = (stream.width.unwrap_or(1920), stream.height.unwrap_or(1080));
+                    let mut reader = crate::platform::wayland::capture::pipewire::PipeWireStreamReader::new(res.pipewire_fd, node_id);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    match reader.acquire_frame(deadline, w, h, crate::snapshot::frame::CapturePixelFormat::Rgba8888) {
+                        Ok(frame) => {
+                            if let crate::snapshot::frame::FrameMemory::Owned(bytes) = frame.memory {
+                                let expected_len = (w * h * 4) as usize;
+                                if bytes.len() >= expected_len {
+                                    if let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) {
+                                        pixmap.data_mut().copy_from_slice(&bytes[..expected_len]);
+                                        println!("Captured real desktop background frame via 0-flash ScreenCast PipeWire stream ({}x{})!", w, h);
+                                        return Ok(pixmap);
+                                    }
+                                } else {
+                                    println!("PipeWire frame buffer size mismatch: got {}, expected {}", bytes.len(), expected_len);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("PipeWire acquire_frame error: {:?}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("ScreenCast portal start_screencast_session error: {:?}", e);
+            }
+        }
 
-            let _ = std::fs::remove_file(path_str.as_ref());
-
-            tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| {
-                CaptureError::new(
-                    CaptureErrorKind::InvalidPortalResponse,
-                    format!("Failed to decode portal screenshot PNG: {}", e),
-                )
-            })
-        })
+        Err(CaptureError::new(CaptureErrorKind::PortalUnavailable, "ScreenCast PipeWire stream unavailable"))
     }
 }
 

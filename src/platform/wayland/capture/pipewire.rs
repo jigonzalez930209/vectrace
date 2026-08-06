@@ -63,12 +63,15 @@ impl PipeWireStreamReader {
                         let data = &mut datas[0];
                         let chunk = data.chunk();
                         let size = chunk.size() as usize;
-                        if size >= (width * height * 4) as usize {
+                        if size > 0 {
                             if let Some(map) = data.data() {
-                                let mut vec = vec![0u8; size];
-                                vec.copy_from_slice(&map[..size]);
-                                let mut lock = frame_clone.lock().unwrap();
-                                *lock = Some(vec);
+                                let copy_len = size.min(map.len());
+                                if copy_len > 0 {
+                                    let mut vec = vec![0u8; copy_len];
+                                    vec.copy_from_slice(&map[..copy_len]);
+                                    let mut lock = frame_clone.lock().unwrap();
+                                    *lock = Some(vec);
+                                }
                             }
                         }
                     }
@@ -77,7 +80,7 @@ impl PipeWireStreamReader {
             .register();
 
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(150) {
+        while start.elapsed() < Duration::from_millis(1500) {
             let loop_ref = mainloop.loop_();
             let _ = loop_ref.iterate(Duration::from_millis(10));
             let lock = latest_frame.lock().unwrap();
