@@ -94,6 +94,8 @@ fn hit_test_crop(
 
     (CropHitResult::Outside, rect)
 }
+
+fn capture_desktop_background(
     conn: &impl Connection,
     root: u32,
     w: u16,
@@ -877,7 +879,7 @@ impl PlatformBackend for X11Backend {
                         println!("System Tray Action: Clear Canvas");
                     }
                     TrayEvent::SaveFull => {
-                        self.trigger_save_full(canvas);
+                        self.trigger_save_full(&conn, screen.root, canvas);
                     }
                     TrayEvent::SaveRegion => {
                         self.active_tool = Tool::default_select_region();
@@ -988,11 +990,11 @@ impl PlatformBackend for X11Backend {
                                     println!("Canvas cleared");
                                 }
                                 ToolbarAction::SaveFull => {
-                                    self.trigger_save_full(canvas);
+                                    self.trigger_save_full(&conn, screen.root, canvas);
                                 }
                                 ToolbarAction::ConfirmCrop => {
                                     if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
-                                        self.trigger_save_crop(canvas, sx, sy, cx, cy);
+                                        self.trigger_save_crop(&conn, screen.root, canvas, sx, sy, cx, cy);
                                     }
                                     self.active_tool = Tool::default_pen();
                                     self.crop_drag_state = CropDragState::None;
@@ -1149,6 +1151,12 @@ impl PlatformBackend for X11Backend {
                     }
 
                     if matches!(self.active_tool, Tool::SelectRegion) && self.crop_drag_state != CropDragState::None {
+                        let old_crop = if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
+                            Some((sx, sy, cx, cy))
+                        } else {
+                            None
+                        };
+
                         match self.crop_drag_state {
                             CropDragState::Creating => {
                                 self.crop_current = Some((move_x, move_y));
@@ -1180,7 +1188,15 @@ impl PlatformBackend for X11Backend {
                             }
                             CropDragState::None => {}
                         }
-                        self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+
+                        let new_crop = if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
+                            Some((sx, sy, cx, cy))
+                        } else {
+                            None
+                        };
+
+                        let dirty_rect = compute_crop_dirty_rect(old_crop, new_crop, self.width, self.height, self.scale_factor);
+                        self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                         continue;
                     }
 
@@ -1345,7 +1361,7 @@ impl PlatformBackend for X11Backend {
                                     self.active_tool = Tool::default_select_region();
                                     println!("Activated Crop Selection Tool via Ctrl+Shift+S");
                                 } else {
-                                    self.trigger_save_full(canvas);
+                                    self.trigger_save_full(&conn, screen.root, canvas);
                                 }
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                             }
