@@ -12,4 +12,11 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.31", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 rustix = { version = "0.38", features = ["shm", "mm", "fs", "std"] }
+ksni = "0.3"
+tokio = { version = "1", features = ["rt", "macros"] }
+signal-hook-registry = "1.4"
+
+
+
+
 
