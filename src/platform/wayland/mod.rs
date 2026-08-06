@@ -458,6 +458,25 @@ impl PlatformBackend for WaylandBackend {
                             canvas.clear();
                             println!("System Tray Action: Clear Canvas");
                         }
+                        TrayEvent::SaveFull => {
+                            let w = state.width;
+                            let h = state.height;
+                            if w > 0 && h > 0 {
+                                let mut temp = tiny_skia::Pixmap::new(w, h).unwrap();
+                                canvas.render_background(&mut temp);
+                                canvas.render_completed_strokes(&mut temp);
+                                if let Some(stroke) = canvas.current_stroke() {
+                                    if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
+                                        crate::core::canvas::render_stroke(stroke, &mut temp);
+                                    }
+                                }
+                                let _ = crate::core::canvas::save_pixmap_to_file(&temp, None);
+                            }
+                        }
+                        TrayEvent::SaveRegion => {
+                            self.active_tool = Tool::default_select_region();
+                            println!("System Tray Action: Select Region Crop Tool");
+                        }
                         TrayEvent::Exit => {
                             println!("System Tray Action: Exit application");
                             return Ok(());
@@ -474,13 +493,15 @@ impl PlatformBackend for WaylandBackend {
             let now_ms = crate::core::canvas::current_time_ms();
 
             if state.button_pressed && !prev_button_pressed {
-                if let Some(action) = toolbar.handle_click(cur_x, cur_y, self.show_settings_menu, self.show_color_menu) {
+                let has_crop = false;
+                if let Some(action) = toolbar.handle_click(cur_x, cur_y, self.show_settings_menu, self.show_color_menu, has_crop) {
                     if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                         canvas.finish_current_stroke();
                     }
 
                     match action {
                         ToolbarAction::StartDrag => {}
+                        ToolbarAction::ConfirmCrop => {}
                         ToolbarAction::SelectTool(tool) => {
                             self.active_tool = tool;
                             self.show_color_menu = false;
@@ -510,6 +531,21 @@ impl PlatformBackend for WaylandBackend {
                         ToolbarAction::Clear => {
                             canvas.clear();
                             println!("Canvas cleared");
+                        }
+                        ToolbarAction::SaveFull => {
+                            let w = state.width;
+                            let h = state.height;
+                            if w > 0 && h > 0 {
+                                let mut temp = tiny_skia::Pixmap::new(w, h).unwrap();
+                                canvas.render_background(&mut temp);
+                                canvas.render_completed_strokes(&mut temp);
+                                if let Some(stroke) = canvas.current_stroke() {
+                                    if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
+                                        crate::core::canvas::render_stroke(stroke, &mut temp);
+                                    }
+                                }
+                                let _ = crate::core::canvas::save_pixmap_to_file(&temp, None);
+                            }
                         }
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
@@ -662,6 +698,7 @@ impl PlatformBackend for WaylandBackend {
                 self.show_settings_menu,
                 self.show_color_menu,
                 self.monitor_mode,
+                false,
             );
 
 

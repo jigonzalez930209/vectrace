@@ -18,6 +18,166 @@ use x11rb::wrapper::ConnectionExt as _;
 use crate::platform::tray::TrayEvent;
 use std::sync::mpsc::Receiver;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CropHandle {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CropDragState {
+    None,
+    Creating,
+    Moving {
+        start_mouse: (f32, f32),
+        initial_rect: (f32, f32, f32, f32),
+    },
+    Resizing {
+        handle: CropHandle,
+        initial_rect: (f32, f32, f32, f32),
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CropHitResult {
+    Handle(CropHandle),
+    Inside,
+    Outside,
+}
+
+fn hit_test_crop(
+    sx: f32, sy: f32, cx: f32, cy: f32,
+    px: f32, py: f32, scale: f32,
+) -> (CropHitResult, (f32, f32, f32, f32)) {
+    let min_x = sx.min(cx);
+    let max_x = sx.max(cx);
+    let min_y = sy.min(cy);
+    let max_y = sy.max(cy);
+    let rect = (min_x, min_y, max_x, max_y);
+
+    let margin = 14.0 * scale;
+
+    if (px - min_x).abs() <= margin && (py - min_y).abs() <= margin {
+        return (CropHitResult::Handle(CropHandle::TopLeft), rect);
+    }
+    if (px - max_x).abs() <= margin && (py - min_y).abs() <= margin {
+        return (CropHitResult::Handle(CropHandle::TopRight), rect);
+    }
+    if (px - min_x).abs() <= margin && (py - max_y).abs() <= margin {
+        return (CropHitResult::Handle(CropHandle::BottomLeft), rect);
+    }
+    if (px - max_x).abs() <= margin && (py - max_y).abs() <= margin {
+        return (CropHitResult::Handle(CropHandle::BottomRight), rect);
+    }
+    if (py - min_y).abs() <= margin && px >= min_x - margin && px <= max_x + margin {
+        return (CropHitResult::Handle(CropHandle::Top), rect);
+    }
+    if (py - max_y).abs() <= margin && px >= min_x - margin && px <= max_x + margin {
+        return (CropHitResult::Handle(CropHandle::Bottom), rect);
+    }
+    if (px - min_x).abs() <= margin && py >= min_y - margin && py <= max_y + margin {
+        return (CropHitResult::Handle(CropHandle::Left), rect);
+    }
+    if (px - max_x).abs() <= margin && py >= min_y - margin && py <= max_y + margin {
+        return (CropHitResult::Handle(CropHandle::Right), rect);
+    }
+
+    if px > min_x && px < max_x && py > min_y && py < max_y {
+        return (CropHitResult::Inside, rect);
+    }
+
+    (CropHitResult::Outside, rect)
+}
+    conn: &impl Connection,
+    root: u32,
+    w: u16,
+    h: u16,
+) -> Option<tiny_skia::Pixmap> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    let reply = conn.get_image(
+        ImageFormat::Z_PIXMAP,
+        root,
+        0,
+        0,
+        w,
+        h,
+        !0,
+    ).ok()?.reply().ok()?;
+
+    let data = reply.data;
+    let expected_len = (w as usize) * (h as usize) * 4;
+
+    let mut pixmap = tiny_skia::Pixmap::new(w as u32, h as u32)?;
+    let rgba_data = pixmap.data_mut();
+
+    if data.len() >= expected_len {
+        for i in 0..(w as usize * h as usize) {
+            let src_idx = i * 4;
+            let b = data[src_idx];
+            let g = data[src_idx + 1];
+            let r = data[src_idx + 2];
+            let a = 255u8;
+
+            rgba_data[src_idx] = r;
+            rgba_data[src_idx + 1] = g;
+            rgba_data[src_idx + 2] = b;
+            rgba_data[src_idx + 3] = a;
+        }
+    }
+
+    Some(pixmap)
+}
+
+fn compute_crop_dirty_rect(
+    old_rect: Option<(f32, f32, f32, f32)>,
+    new_rect: Option<(f32, f32, f32, f32)>,
+    screen_w: u16,
+    screen_h: u16,
+    scale: f32,
+) -> Option<Rectangle> {
+    let padding = 40.0 * scale;
+
+    let (min_x, min_y, max_x, max_y) = match (old_rect, new_rect) {
+        (Some((o1, o2, o3, o4)), Some((n1, n2, n3, n4))) => {
+            (
+                o1.min(n1).min(o3).min(n3),
+                o2.min(n2).min(o4).min(n4),
+                o1.max(n1).max(o3).max(n3),
+                o2.max(n2).max(o4).max(n4),
+            )
+        }
+        (Some((r1, r2, r3, r4)), None) | (None, Some((r1, r2, r3, r4))) => {
+            (r1.min(r3), r2.min(r4), r1.max(r3), r2.max(r4))
+        }
+        (None, None) => return None,
+    };
+
+    let rx = (min_x - padding).max(0.0) as i16;
+    let ry = (min_y - padding).max(0.0) as i16;
+    let rw = ((max_x + padding) - rx as f32).min(screen_w as f32) as u16;
+    let rh = ((max_y + padding) - ry as f32).min(screen_h as f32) as u16;
+
+    if rw == 0 || rh == 0 {
+        None
+    } else {
+        Some(Rectangle {
+            x: rx,
+            y: ry,
+            width: rw,
+            height: rh,
+        })
+    }
+}
+
 pub struct X11Backend {
     width: u16,
     height: u16,
@@ -40,6 +200,10 @@ pub struct X11Backend {
     completed_strokes_dirty: bool,
     prev_spotlight_point: Option<Point>,
     prev_shape_point: Option<Point>,
+    toast_notification: Option<crate::core::canvas::ToastNotification>,
+    crop_start: Option<(f32, f32)>,
+    crop_current: Option<(f32, f32)>,
+    crop_drag_state: CropDragState,
 }
 
 impl X11Backend {
@@ -65,6 +229,10 @@ impl X11Backend {
             completed_strokes_dirty: true,
             prev_spotlight_point: None,
             prev_shape_point: None,
+            toast_notification: None,
+            crop_start: None,
+            crop_current: None,
+            crop_drag_state: CropDragState::None,
         }
     }
 
@@ -74,6 +242,85 @@ impl X11Backend {
         let mut backend = Self::new();
         backend.tray_rx = Some(tray_rx);
         backend
+    }
+
+    fn trigger_save_full(&mut self, conn: &impl Connection, root: u32, canvas: &mut Canvas) {
+        let w = self.width as u32;
+        let h = self.height as u32;
+        if w == 0 || h == 0 { return; }
+
+        let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+        if canvas.background_mode == crate::core::BackgroundMode::Transparent {
+            if let Some(desktop) = capture_desktop_background(conn, root, self.width, self.height) {
+                temp_pixmap = desktop;
+            } else {
+                canvas.render_background(&mut temp_pixmap);
+            }
+        } else {
+            canvas.render_background(&mut temp_pixmap);
+        }
+
+        canvas.render_completed_strokes(&mut temp_pixmap);
+        if let Some(stroke) = canvas.current_stroke() {
+            if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
+                crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
+            }
+        }
+
+        match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, None) {
+            Ok(path) => {
+                println!("Full Screen saved to: {}", path);
+                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Saved: {}", path), 3000));
+            }
+            Err(e) => {
+                println!("Failed to save full screen: {}", e);
+                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Error: {}", e), 3000));
+            }
+        }
+    }
+
+    fn trigger_save_crop(&mut self, conn: &impl Connection, root: u32, canvas: &mut Canvas, sx: f32, sy: f32, cx: f32, cy: f32) {
+        let w = self.width as u32;
+        let h = self.height as u32;
+        if w == 0 || h == 0 { return; }
+
+        let min_x = (sx.min(cx)).max(0.0).min(w as f32) as u32;
+        let min_y = (sy.min(cy)).max(0.0).min(h as f32) as u32;
+        let crop_w = (sx - cx).abs() as u32;
+        let crop_h = (sy - cy).abs() as u32;
+
+        if crop_w < 4 || crop_h < 4 {
+            return;
+        }
+
+        let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+        if canvas.background_mode == crate::core::BackgroundMode::Transparent {
+            if let Some(desktop) = capture_desktop_background(conn, root, self.width, self.height) {
+                temp_pixmap = desktop;
+            } else {
+                canvas.render_background(&mut temp_pixmap);
+            }
+        } else {
+            canvas.render_background(&mut temp_pixmap);
+        }
+
+        canvas.render_completed_strokes(&mut temp_pixmap);
+        if let Some(stroke) = canvas.current_stroke() {
+            if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
+                crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
+            }
+        }
+
+        match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, Some((min_x, min_y, crop_w, crop_h))) {
+            Ok(path) => {
+                println!("Cropped Region ({}x{}) saved to: {}", crop_w, crop_h, path);
+                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Saved Crop: {}", path), 3000));
+            }
+            Err(e) => {
+                println!("Failed to save crop region: {}", e);
+                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Crop Error: {}", e), 3000));
+            }
+        }
     }
 
     fn set_hidden(
@@ -552,8 +799,11 @@ impl PlatformBackend for X11Backend {
         const XK_KP_ENTER: u32 = 0xff8d;
         const XK_U: u32 = 0x0075;
         const XK_R: u32 = 0x0072;
-        const XK_C: u32 = 0x0063;
+        const XK_C_LOWER: u32 = 0x0063;
+        const XK_C_UPPER: u32 = 0x0043;
         const XK_B: u32 = 0x0062;
+        const XK_S_LOWER: u32 = 0x0073;
+        const XK_S_UPPER: u32 = 0x0053;
 
         println!("Controls:\n  [Ctrl+Alt+A] Global Toggle Active/Passthrough\n  [Space]      Toggle Click-Through\n  [U]          Undo last stroke\n  [R]          Redo last stroke\n  [C]          Clear canvas\n  [B]          Toggle Blackboard/Whiteboard\n  [ESC]        Exit application\n");
 
@@ -626,6 +876,13 @@ impl PlatformBackend for X11Backend {
                         canvas.clear();
                         println!("System Tray Action: Clear Canvas");
                     }
+                    TrayEvent::SaveFull => {
+                        self.trigger_save_full(canvas);
+                    }
+                    TrayEvent::SaveRegion => {
+                        self.active_tool = Tool::default_select_region();
+                        println!("System Tray Action: Select Region Crop Tool");
+                    }
                     TrayEvent::Exit => {
                         println!("System Tray Action: Exit application");
                         return Ok(());
@@ -669,7 +926,9 @@ impl PlatformBackend for X11Backend {
 
                         focus_x11_window(&conn, screen.root, win_id);
 
-                        if let Some(action) = toolbar.handle_click(click_x, click_y, self.show_settings_menu, self.show_color_menu) {
+                        let has_crop = self.crop_start.is_some() && self.crop_current.is_some();
+
+                        if let Some(action) = toolbar.handle_click(click_x, click_y, self.show_settings_menu, self.show_color_menu, has_crop) {
                             if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                 canvas.finish_current_stroke();
                             }
@@ -685,6 +944,11 @@ impl PlatformBackend for X11Backend {
                                     println!("Started dragging toolbar from ({:.0}, {:.0})", toolbar.x, toolbar.y);
                                 }
                                 ToolbarAction::SelectTool(tool) => {
+                                    if !matches!(tool, Tool::SelectRegion) {
+                                        self.crop_start = None;
+                                        self.crop_current = None;
+                                        self.crop_drag_state = CropDragState::None;
+                                    }
                                     self.active_tool = tool;
                                     self.show_color_menu = false;
                                     if matches!(tool, Tool::Text { .. }) {
@@ -693,6 +957,9 @@ impl PlatformBackend for X11Backend {
                                     println!("Selected tool: {:?}", tool);
                                 }
                                 ToolbarAction::SelectShape(kind) => {
+                                    self.crop_start = None;
+                                    self.crop_current = None;
+                                    self.crop_drag_state = CropDragState::None;
                                     self.active_tool = Tool::default_shape(kind);
                                     self.show_color_menu = false;
                                     println!("Selected shape: {:?}", kind);
@@ -715,7 +982,21 @@ impl PlatformBackend for X11Backend {
                                 }
                                 ToolbarAction::Clear => {
                                     canvas.clear();
+                                    self.crop_start = None;
+                                    self.crop_current = None;
+                                    self.crop_drag_state = CropDragState::None;
                                     println!("Canvas cleared");
+                                }
+                                ToolbarAction::SaveFull => {
+                                    self.trigger_save_full(canvas);
+                                }
+                                ToolbarAction::ConfirmCrop => {
+                                    if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
+                                        self.trigger_save_crop(canvas, sx, sy, cx, cy);
+                                    }
+                                    self.active_tool = Tool::default_pen();
+                                    self.crop_drag_state = CropDragState::None;
+                                    println!("Confirmed and saved crop selection.");
                                 }
                                 ToolbarAction::TogglePassthrough => {
                                     self.passthrough = !self.passthrough;
@@ -771,12 +1052,35 @@ impl PlatformBackend for X11Backend {
 
                             }
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
-                        }
-
- else if !self.passthrough {
+                        } else if !self.passthrough {
                             let now_ms = crate::core::canvas::current_time_ms();
 
-                            if matches!(self.active_tool, Tool::Text { .. }) {
+                            if matches!(self.active_tool, Tool::SelectRegion) {
+                                if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
+                                    let (hit, (min_x, min_y, max_x, max_y)) = hit_test_crop(sx, sy, cx, cy, click_x, click_y, self.scale_factor);
+                                    match hit {
+                                        CropHitResult::Handle(h) => {
+                                            self.crop_drag_state = CropDragState::Resizing { handle: h, initial_rect: (min_x, min_y, max_x, max_y) };
+                                        }
+                                        CropHitResult::Inside => {
+                                            self.crop_drag_state = CropDragState::Moving {
+                                                start_mouse: (click_x, click_y),
+                                                initial_rect: (min_x, min_y, max_x, max_y),
+                                            };
+                                        }
+                                        CropHitResult::Outside => {
+                                            self.crop_start = Some((click_x, click_y));
+                                            self.crop_current = Some((click_x, click_y));
+                                            self.crop_drag_state = CropDragState::Creating;
+                                        }
+                                    }
+                                } else {
+                                    self.crop_start = Some((click_x, click_y));
+                                    self.crop_current = Some((click_x, click_y));
+                                    self.crop_drag_state = CropDragState::Creating;
+                                }
+                                self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                            } else if matches!(self.active_tool, Tool::Text { .. }) {
                                 if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                     canvas.finish_current_stroke();
                                     self.completed_strokes_dirty = true;
@@ -798,7 +1102,7 @@ impl PlatformBackend for X11Backend {
                                 self.completed_strokes_dirty = true;
                                 self.prev_spotlight_point = Some(Point::new(click_x, click_y, 1.0, now_ms));
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
-                            } else {
+                            } else if !matches!(self.active_tool, Tool::SelectRegion) {
                                 let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                             }
@@ -841,6 +1145,42 @@ impl PlatformBackend for X11Backend {
                         };
 
                         self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, Some(dirty_rect))?;
+                        continue;
+                    }
+
+                    if matches!(self.active_tool, Tool::SelectRegion) && self.crop_drag_state != CropDragState::None {
+                        match self.crop_drag_state {
+                            CropDragState::Creating => {
+                                self.crop_current = Some((move_x, move_y));
+                            }
+                            CropDragState::Moving { start_mouse: (mx0, my0), initial_rect: (rx1, ry1, rx2, ry2) } => {
+                                let dx = move_x - mx0;
+                                let dy = move_y - my0;
+                                let rw = rx2 - rx1;
+                                let rh = ry2 - ry1;
+                                let new_min_x = (rx1 + dx).max(0.0).min(self.width as f32 - rw);
+                                let new_min_y = (ry1 + dy).max(0.0).min(self.height as f32 - rh);
+                                self.crop_start = Some((new_min_x, new_min_y));
+                                self.crop_current = Some((new_min_x + rw, new_min_y + rh));
+                            }
+                            CropDragState::Resizing { handle, initial_rect: (rx1, ry1, rx2, ry2) } => {
+                                let (mut min_x, mut min_y, mut max_x, mut max_y) = (rx1, ry1, rx2, ry2);
+                                match handle {
+                                    CropHandle::TopLeft => { min_x = move_x; min_y = move_y; }
+                                    CropHandle::TopRight => { max_x = move_x; min_y = move_y; }
+                                    CropHandle::BottomLeft => { min_x = move_x; max_y = move_y; }
+                                    CropHandle::BottomRight => { max_x = move_x; max_y = move_y; }
+                                    CropHandle::Top => { min_y = move_y; }
+                                    CropHandle::Bottom => { max_y = move_y; }
+                                    CropHandle::Left => { min_x = move_x; }
+                                    CropHandle::Right => { max_x = move_x; }
+                                }
+                                self.crop_start = Some((min_x, min_y));
+                                self.crop_current = Some((max_x, max_y));
+                            }
+                            CropDragState::None => {}
+                        }
+                        self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                         continue;
                     }
 
@@ -903,17 +1243,22 @@ impl PlatformBackend for X11Backend {
                 }
                 Event::ButtonRelease(e) => {
                     if e.detail == 1 {
-                        if self.is_dragging {
-                            self.is_dragging = false;
-                            self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                        if matches!(self.active_tool, Tool::SelectRegion) && self.crop_drag_state != CropDragState::None {
+                            self.crop_drag_state = CropDragState::None;
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
-                        }
-                        if canvas.current_stroke().is_some() {
-                            self.prev_shape_point = None;
-                            if !matches!(self.active_tool, Tool::Text { .. }) && !matches!(self.active_tool, Tool::Spotlight { .. }) {
-                                canvas.finish_current_stroke();
-                                self.completed_strokes_dirty = true;
+                        } else {
+                            if self.is_dragging {
+                                self.is_dragging = false;
+                                self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                            }
+                            if canvas.current_stroke().is_some() {
+                                self.prev_shape_point = None;
+                                if !matches!(self.active_tool, Tool::Text { .. }) && !matches!(self.active_tool, Tool::Spotlight { .. }) {
+                                    canvas.finish_current_stroke();
+                                    self.completed_strokes_dirty = true;
+                                    self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                                }
                             }
                         }
                     }
@@ -982,8 +1327,27 @@ impl PlatformBackend for X11Backend {
                     } else {
                         match keysym {
                             XK_ESCAPE => {
-                                println!("Exiting...");
-                                break;
+                                if self.crop_start.is_some() || matches!(self.active_tool, Tool::SelectRegion) {
+                                    self.crop_start = None;
+                                    self.crop_current = None;
+                                    self.active_tool = Tool::default_pen();
+                                    println!("Cancelled Crop Selection");
+                                    self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                                } else {
+                                    println!("Exiting...");
+                                    break;
+                                }
+                            }
+                            XK_S_LOWER | XK_S_UPPER => {
+                                let is_shift = (u16::from(e.state) & u16::from(ModMask::SHIFT)) != 0;
+                                let is_ctrl = (u16::from(e.state) & u16::from(ModMask::CONTROL)) != 0;
+                                if is_ctrl && is_shift {
+                                    self.active_tool = Tool::default_select_region();
+                                    println!("Activated Crop Selection Tool via Ctrl+Shift+S");
+                                } else {
+                                    self.trigger_save_full(canvas);
+                                }
+                                self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                             }
                             XK_SPACE => {
                                 self.passthrough = !self.passthrough;
@@ -1011,10 +1375,16 @@ impl PlatformBackend for X11Backend {
                                     self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                                 }
                             }
-                            XK_C => {
-                                canvas.clear();
-                                self.completed_strokes_dirty = true;
-                                println!("Canvas cleared");
+                            XK_C_LOWER | XK_C_UPPER => {
+                                let is_ctrl = (u16::from(e.state) & u16::from(ModMask::CONTROL)) != 0;
+                                if is_ctrl {
+                                    self.active_tool = Tool::default_select_region();
+                                    println!("Activated Crop Selection Tool via Ctrl+C");
+                                } else {
+                                    canvas.clear();
+                                    self.completed_strokes_dirty = true;
+                                    println!("Canvas cleared");
+                                }
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                             }
                             _ => {}
@@ -1189,6 +1559,7 @@ impl X11Backend {
             }
         }
 
+        let has_crop_selection = self.crop_start.is_some() && self.crop_current.is_some();
         if !self.is_hidden {
             toolbar.draw(
                 active,
@@ -1198,10 +1569,22 @@ impl X11Backend {
                 self.show_settings_menu,
                 self.show_color_menu,
                 self.monitor_mode,
+                has_crop_selection,
             );
         } else {
-
             active.fill(tiny_skia::Color::TRANSPARENT);
+        }
+
+        if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
+            crate::core::canvas::render_crop_selection(active, sx, sy, cx - sx, cy - sy, self.scale_factor);
+        }
+
+        if let Some(ref toast) = self.toast_notification {
+            if !toast.is_expired() {
+                toast.draw(active, self.width as f32, self.scale_factor);
+            } else {
+                self.toast_notification = None;
+            }
         }
 
 
