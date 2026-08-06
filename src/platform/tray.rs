@@ -2,8 +2,6 @@ use ksni::{Tray, TrayMethods, MenuItem};
 use ksni::menu::StandardItem;
 use std::sync::mpsc::Sender;
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrayEvent {
     ToggleVisibility,
@@ -12,6 +10,8 @@ pub enum TrayEvent {
     TogglePassthrough,
     CycleBackground,
     ClearCanvas,
+    SaveFull,
+    SaveRegion,
     Exit,
 }
 
@@ -21,29 +21,37 @@ pub struct VectraceTray {
 
 fn create_vectrace_icon(size: i32) -> ksni::Icon {
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);
-    let center = (size as f32) / 2.0;
-    let radius = center - 1.5;
-    let radius_sq = radius * radius;
+    let fsize = size as f32;
+    let margin = (fsize * 0.1).round();
+    let inner_w = fsize - margin * 2.0;
 
     for y in 0..size {
         for x in 0..size {
-            let dx = (x as f32) + 0.5 - center;
-            let dy = (y as f32) + 0.5 - center;
-            let dist_sq = dx * dx + dy * dy;
+            let fx = x as f32;
+            let fy = y as f32;
 
-            if dist_sq <= radius_sq {
-                // Vibrant Cyan/Blue Icon (ARGB format)
+            // Lucide-style Minimalist Vector Pen & Frame Outline (Monochrome White on Dark Badge)
+            let is_in_badge = fx >= margin && fx < fsize - margin && fy >= margin && fy < fsize - margin;
+            
+            // Clean Lucide diagonal pen stroke & crop box corner lines
+            let is_pen_line = (fx - fy).abs() <= (fsize * 0.08) && fx >= margin * 1.5 && fx <= fsize - margin * 1.5;
+            let is_corner_h = (fy == margin || fy == fsize - margin - 1.0) && fx >= margin && fx <= margin + inner_w * 0.35;
+            let is_corner_v = (fx == margin || fx == fsize - margin - 1.0) && fy >= margin && fy <= margin + inner_w * 0.35;
+
+            if is_pen_line || is_corner_h || is_corner_v {
+                // High-contrast Lucide White (ARGB)
                 pixels.push(255); // Alpha
-                pixels.push(40);  // Red
-                pixels.push(130); // Green
-                pixels.push(245); // Blue
-            } else if dist_sq <= (radius + 1.0) * (radius + 1.0) {
-                // Anti-aliased outer edge
-                pixels.push(128); // Alpha
-                pixels.push(40);  // Red
-                pixels.push(130); // Green
-                pixels.push(245); // Blue
+                pixels.push(250); // Red
+                pixels.push(250); // Green
+                pixels.push(250); // Blue
+            } else if is_in_badge {
+                // Sleek Dark Charcoal Glass Badge
+                pixels.push(220); // Alpha
+                pixels.push(20);  // Red
+                pixels.push(22);  // Green
+                pixels.push(28);  // Blue
             } else {
+                // Transparent outer border
                 pixels.push(0);
                 pixels.push(0);
                 pixels.push(0);
@@ -90,6 +98,8 @@ impl Tray for VectraceTray {
         let tx5 = self.tx.clone();
         let tx6 = self.tx.clone();
         let tx7 = self.tx.clone();
+        let tx8 = self.tx.clone();
+        let tx9 = self.tx.clone();
 
         vec![
             StandardItem {
@@ -99,66 +109,69 @@ impl Tray for VectraceTray {
             }.into(),
             MenuItem::Separator,
             StandardItem {
-                label: "👁️ Show / Hide Overlay".into(),
+                label: "Show / Hide Overlay".into(),
                 activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Show / Hide Overlay clicked.");
                     let _ = tx1.send(TrayEvent::ToggleVisibility);
-                }),
-                ..Default::default()
-            }.into(),
-            StandardItem {
-                label: "⚙️ Settings Menu".into(),
-                activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Settings clicked.");
-                    let _ = tx2.send(TrayEvent::ToggleSettingsMenu);
                 }),
                 ..Default::default()
             }.into(),
             MenuItem::Separator,
             StandardItem {
-                label: "🖥️ Switch Display (Primary / All)".into(),
+                label: "Save Full Screen".into(),
                 activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Switch Display clicked.");
-                    let _ = tx3.send(TrayEvent::ToggleMonitorMode);
+                    let _ = tx7.send(TrayEvent::SaveFull);
                 }),
                 ..Default::default()
             }.into(),
             StandardItem {
-                label: "🖱️ Toggle Click-Through".into(),
+                label: "Save Region Selection (Crop)".into(),
                 activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Toggle Click-Through clicked.");
+                    let _ = tx8.send(TrayEvent::SaveRegion);
+                }),
+                ..Default::default()
+            }.into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Toggle Click-Through".into(),
+                activate: Box::new(move |_| {
                     let _ = tx4.send(TrayEvent::TogglePassthrough);
                 }),
                 ..Default::default()
             }.into(),
             StandardItem {
-                label: "🎨 Cycle Background Mode".into(),
+                label: "Cycle Background Mode".into(),
                 activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Cycle Background clicked.");
                     let _ = tx5.send(TrayEvent::CycleBackground);
                 }),
                 ..Default::default()
             }.into(),
             StandardItem {
-                label: "🧹 Clear Canvas".into(),
+                label: "Clear Canvas".into(),
                 activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Clear Canvas clicked.");
                     let _ = tx6.send(TrayEvent::ClearCanvas);
                 }),
                 ..Default::default()
             }.into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Global Shortcut: [Ctrl + Alt + A]".into(),
-                enabled: false,
+                label: "Switch Display Mode".into(),
+                activate: Box::new(move |_| {
+                    let _ = tx3.send(TrayEvent::ToggleMonitorMode);
+                }),
+                ..Default::default()
+            }.into(),
+            StandardItem {
+                label: "Settings Menu".into(),
+                activate: Box::new(move |_| {
+                    let _ = tx2.send(TrayEvent::ToggleSettingsMenu);
+                }),
                 ..Default::default()
             }.into(),
             MenuItem::Separator,
             StandardItem {
-                label: "❌ Quit Vectrace".into(),
+                label: "Quit Vectrace".into(),
                 activate: Box::new(move |_| {
-                    println!("System Tray DBus Menu: Quit Vectrace clicked.");
-                    let _ = tx7.send(TrayEvent::Exit);
+                    let _ = tx9.send(TrayEvent::Exit);
                 }),
                 ..Default::default()
             }.into(),
@@ -174,7 +187,6 @@ impl Tray for VectraceTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        println!("System Tray Icon clicked directly (activate).");
         let _ = self.tx.send(TrayEvent::ToggleVisibility);
     }
 }
@@ -193,8 +205,5 @@ pub fn spawn_tray(tx: Sender<TrayEvent>) {
             }
         });
     });
-    println!("System Tray Icon (StatusNotifierItem - Active) initialized with interactive menu.");
+    println!("System Tray Icon (StatusNotifierItem - Lucide Style Monochrome) initialized.");
 }
-
-
-
