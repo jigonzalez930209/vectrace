@@ -37,6 +37,7 @@ pub enum Tool {
     Spotlight {
         radius: f32,
     },
+    SelectRegion,
 }
 
 impl Tool {
@@ -84,6 +85,10 @@ impl Tool {
         Tool::Spotlight { radius: 120.0 }
     }
 
+    pub fn default_select_region() -> Self {
+        Tool::SelectRegion
+    }
+
     pub fn color(&self) -> Option<Color> {
         match self {
             Tool::Pen { color, .. } => Some(*color),
@@ -93,6 +98,7 @@ impl Tool {
             Tool::Laser { color, .. } => Some(*color),
             Tool::Eraser { .. } => None,
             Tool::Spotlight { .. } => None,
+            Tool::SelectRegion => None,
         }
     }
 
@@ -111,6 +117,7 @@ impl Tool {
             Tool::Laser { color, .. } => *color = new_color,
             Tool::Eraser { .. } => {}
             Tool::Spotlight { .. } => {}
+            Tool::SelectRegion => {}
         }
     }
 
@@ -146,6 +153,7 @@ impl Tool {
             Tool::Eraser { width } => {
                 Some(Stroke::new(Color::new(0, 0, 0, 0), *width, BlendMode::Clear))
             }
+            Tool::SelectRegion => None,
         }
     }
 }
