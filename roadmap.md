@@ -1,87 +1,97 @@
-# Roadmap de Desarrollo - Vectrace Screen Marker
+# Development Roadmap - Vectrace Screen Marker
 
-La arquitectura de **Vectrace** se basa en desacoplar completamente el **motor de renderizado vectorial agnóstico** de los **backends de ventana del sistema gráfico Linux** (X11, XWayland y Wayland).
+The architecture of **Vectrace** is based on completely decoupling the **agnostic vector rendering engine** from the **graphics window backends on Linux** (X11, XWayland, and Wayland).
 
 ---
 
-## Stack de Crates Implementado
+## Implemented Crate Stack
 
-| Componente | Crate Rust | Estado | Propósito |
+| Component | Rust Crate | Status | Purpose |
 | --- | --- | --- | --- |
-| **Renderizado 2D Vectorial** | `tiny-skia` + `fontdue` | `[x] Activo` | Renderizado vectorial puro en software de alta fidelidad, suavizado y rasterización de fuentes. |
-| **Backend X11 / XWayland** | `x11rb` | `[x] Activo` | Cliente X11 puro para manejo de transparencia 32-bit ARGB, `XShape` passthrough y atajos globales `XGrabKey`. |
-| **Backend Wayland Nativo** | `wayland-client` + `wayland-protocols` | `[x] Activo` | Integración nativa con `zwlr_layer_shell_v1` y `xdg_wm_base` (XDG Shell). |
-| **Estructura de Datos** | `vectrace::core` | `[x] Activo` | Algoritmos de suavizado Catmull-Rom, pilaUndo/Redo y motor de formas geométricas. |
+| **Vector 2D Rendering** | `tiny-skia` + `fontdue` | `[x] Active` | High-fidelity pure software vector rendering, anti-aliasing, and font rasterization. |
+| **X11 / XWayland Backend** | `x11rb` | `[x] Active` | Pure X11 client for 32-bit ARGB transparency, `XShape` passthrough, and `XGrabKey` global daemon shortcuts. |
+| **Native Wayland Backend** | `wayland-client` + `wayland-protocols` | `[x] Active` | Native integration with `zwlr_layer_shell_v1` and `xdg_wm_base` (XDG Shell). |
+| **System Tray & DBus Menu** | `ksni` + `zbus` + `tokio` | `[x] Active` | Cross-desktop Linux system tray icon (`StatusNotifierItem`) and interactive DBus context menu. |
+| **Data Architecture** | `vectrace::core` | `[x] Active` | Catmull-Rom spline smoothing algorithms, Undo/Redo command stack, and shape engine. |
 
 ---
 
-## Estructura del Proyecto (`src/`)
+## Project Directory Structure (`src/`)
 
 ```text
 vectrace/
 ├── Cargo.toml
+├── roadmap.md
 └── src/
     ├── main.rs
     ├── core/
     │   ├── mod.rs
-    │   ├── canvas.rs          # Motor de dibujo vectorial, suavizado e historial Undo/Redo
-    │   └── tools.rs           # Lápiz, resaltador, láser, spotlight, formas (línea, flecha, rect, óvalo)
+    │   ├── canvas.rs          # Vector canvas engine, stroke smoothing, and Undo/Redo history
+    │   ├── config.rs          # Monitor modes, scale factors, and configuration
+    │   └── tools.rs           # Pen, highlighter, laser, spotlight, shapes (line, arrow, rect, oval)
     ├── platform/
-    │   ├── mod.rs             # Trait `PlatformBackend` y selección de backend
-    │   ├── x11/               # Backend X11 / XWayland (x11rb, XShape, XGrabKey, XGrabKeyboard)
-    │   └── wayland/           # Backend Wayland nativo (layer-shell + XDG Shell)
+    │   ├── mod.rs             # `PlatformBackend` trait and backend selection logic
+    │   ├── tray.rs            # System tray icon (StatusNotifierItem & DBus menu integration)
+    │   ├── x11/               # X11 / XWayland backend (x11rb, XShape, XGrabKey, XGrabKeyboard)
+    │   └── wayland/           # Native Wayland backend (layer-shell + XDG Shell)
     └── ui/
-        ├── toolbar.rs         # Barra de herramientas flotante glassmorphic con escalado HiDPI
+        ├── toolbar.rs         # Compact 20% smaller floating glassmorphic toolbar with color popup & drag handle
         └── mod.rs
 ```
 
 ---
 
-## Estado Actual de las Fases del Roadmap
+## Current Roadmap Phase Status
 
-### [x] Fase 1: Motor Gráfico Vectorial (Canvas Agnóstico)
-- `[x]` Estructuras de datos vectoriales (`Stroke`, `Point`, `Color`, `BlendMode`).
-- `[x]` Algoritmo de suavizado de trazos con splines **Catmull-Rom**.
-- `[x]` Renderizado 2D de alta fidelidad con `tiny-skia` sobre buffer con transparencia alfa.
-- `[x]` Historial de comandos vectoriales para **Undo** (`U`) y **Redo** (`R`).
-
----
-
-### [x] Fase 2: Backend X11 & Transparencia 32-bit
-- `[x]` Creación de ventana sobrepuesta a pantalla completa.
-- `[x]` Visual ARGB de 32 bits para soporte de transparencia 100% real.
-- `[x]` **Pass-Through de Clics**: Alternancia dinámica de la máscara de entrada con la extensión `XShape` (`x11rb::protocol::shape`).
-- `[x]` Blitting de sub-rectángulos sucios (*dirty rects*) para alto rendimiento a 1000Hz+ sin lag.
+### [x] Phase 1: Vector Graphics Engine (Agnostic Canvas)
+- `[x]` Vector data structures (`Stroke`, `Point`, `Color`, `BlendMode`).
+- `[x]` Stroke smoothing algorithm using **Catmull-Rom** splines.
+- `[x]` High-fidelity 2D rendering with `tiny-skia` on alpha-transparent pixel buffers.
+- `[x]` Vector command stack for **Undo** (`U`) and **Redo** (`R`).
 
 ---
 
-### [x] Fase 3: Backend Wayland Nativos y XWayland
-- `[x]` Integración nativa con `zwlr_layer_shell_v1` (Sway, Hyprland, KDE).
-- `[x]` Integración nativa con `xdg_wm_base` (XDG Shell para GNOME Wayland).
-- `[x]` Fallback automático a backend XWayland transparente de 32-bits para máxima compatibilidad con todos los escritorios Linux.
+### [x] Phase 2: X11 Backend & 32-bit Transparency
+- `[x]` Fullscreen overlay window creation across single and multi-monitors.
+- `[x]` True 32-bit ARGB visual support for real 100% transparency.
+- `[x]` **Click Passthrough**: Dynamic input shape masking via `XShape` extension (`x11rb::protocol::shape`).
+- `[x]` **Offscreen 1x1 Input Region (`-32000, -32000`)**: Prevents GNOME XWayland full-screen input mask reset when minimized to System Tray.
+- `[x]` Dirty sub-rectangle blitting for 1000Hz+ high-performance rendering without lag.
 
 ---
 
-### [x] Fase 4: Herramientas Avanzadas y Shaders
-- `[x]` **Puntero Láser Neón:** Rastro con brillo neón y decaimiento temporal automático en 1.2 segundos.
-- `[x]` **Modo Spotlight / Foco (Lupa):** Icono de lupa, máscara oscura a pantalla completa con corte circular activado *on-click*.
-- `[x]` **Formas Geométricas en Tiempo Real:** Vista previa fluida sin sombreado fantasma (*ghosting*) para Línea, Flecha, Rectángulo y Óvalo.
-- `[x]` **Modo Pizarra / Pizarrón:** Alternancia entre fondo Transparente, Pizarra Oscura (`#18181C`) y Pizarrón Blanco (`#FAFAFA`) mediante tecla `B` o botón en barra.
-- `[ ]` **[TODO] Cajón de Texto Interactivo ("T"):** Herramienta de texto con cuadro interactivo y entrada de teclado dedicada (Pospuesto para refinamiento).
+### [x] Phase 3: Native Wayland & XWayland Backends
+- `[x]` Native `zwlr_layer_shell_v1` protocol integration (Sway, Hyprland, KDE).
+- `[x]` Native `xdg_wm_base` protocol integration (XDG Shell for GNOME Wayland).
+- `[x]` Automatic fallback to 32-bit transparent XWayland backend for universal compatibility across all Linux desktops.
 
 ---
 
-### [x] Fase 5: Multimonitor, HiDPI y Atajos Globales
-- `[x]` **Geometría Multimonitor:** Cálculo automático del bounding box del escritorio virtual completo sobre múltiples pantallas.
-- `[x]` **Escalado HiDPI Dinámico:** Soporte para factores de escala de pantalla (`GDK_SCALE`, `QT_SCALE_FACTOR`, `VECTRACE_SCALE`) adaptando iconos, bordes y grosores de trazo para pantallas 4K / Retina.
-- `[x]` **Atajo Global de Sistema (`Ctrl + Alt + A`):** Captura de atajo global nativo con `XGrabKey` para alternar la visibilidad y passthrough de Vectrace desde cualquier aplicación.
+### [x] Phase 4: Advanced Tools, Shapes & Effects
+- `[x]` **Neon Laser Pointer:** Neon glow trail with automatic 1.2-second temporal decay.
+- `[x]` **Spotlight / Lens Mode:** Circular spotlight cutout with dark full-screen mask toggled on-click.
+- `[x]` **Real-time Geometric Shapes:** Smooth live preview without ghosting for Line, Arrow, Rectangle, and Oval.
+- `[x]` **Blackboard / Whiteboard Mode:** Toggling between Transparent, Dark Blackboard (`#18181C`), and Whiteboard (`#FAFAFA`) via key `B` or toolbar button.
+- `[x]` **Text Box Tool:** Interactive text input box with dedicated keyboard input.
 
 ---
 
-### [ ] Fase 6: Empaquetado Multidistro y CI/CD (Próxima Fase)
-- `[ ]` **Integración en el Sistema:** Archivo `.desktop` (`com.vectrace.Vectrace.desktop`) e icono SVG (`vectrace.svg`).
-- `[ ]` **Paquete DEB:** Configuración `cargo-deb` para Debian, Ubuntu y Linux Mint.
-- `[ ]` **Paquete RPM:** Configuración `cargo-generate-rpm` para Fedora, RHEL y openSUSE.
-- `[ ]` **AppImage:** Script ejecutable ejecutable portable independiente.
-- `[ ]` **Receta Arch Linux:** Archivo `PKGBUILD`.
-- `[ ]` **Pipeline CI/CD:** GitHub Actions (`.github/workflows/ci.yml`) para pruebas y publicación de artefactos automatizada.
+### [x] Phase 5: Multi-Monitor, System Tray, Color Menu & Screen Dragging
+- `[x]` **Multi-Monitor Geometry:** Automatic primary display auto-detection and toolbar centering (`mon_x + (mon_w - toolbar_w) / 2`).
+- [x] **Dynamic HiDPI Scaling:** Display scale factor detection (`GDK_SCALE`, `QT_SCALE_FACTOR`, `VECTRACE_SCALE`) scaling icons, stroke widths, and borders for 4K / Retina displays.
+- [x] **Global System Daemon Shortcut (`Ctrl + Alt + A`):** Native global shortcut capture via `XGrabKey` to toggle Vectrace visibility and passthrough from any app.
+- [x] **Multi-Monitor Mode Selection:** Dynamic switching between *Primary Monitor* mode and *All Monitors* extended mode.
+- [x] **System Tray Icon & Options Menu:** System tray icon (`ksni` StatusNotifierItem) with interactive DBus popup menu for visibility, display mode, passthrough, background mode, clear canvas, and quit.
+- [x] **20% Toolbar Size Reduction:** Compact modern toolbar UI (width `660px`, height `38px`).
+- [x] **Color Selection Popup Menu (🎨):** Color palette button with an interactive grid of 12 vibrant colors (Red, Orange, Yellow, Green, Cyan, Blue, Purple, Pink, White, Light Gray, Dark Gray, Black).
+- [x] **60fps+ Screen-Wide Dragging:** Interactive drag grip handle (`⠿`) with motion event coalescing and dirty bounding box rendering (~0.1MB/frame) for butter-smooth dragging.
+
+---
+
+### [ ] Phase 6: Multi-Distro Packaging & CI/CD (Next Phase)
+- `[ ]` **Desktop System Integration:** Desktop entry file (`com.vectrace.Vectrace.desktop`) and SVG icon (`vectrace.svg`).
+- `[ ]` **DEB Package:** `cargo-deb` configuration for Debian, Ubuntu, and Linux Mint.
+- `[ ]` **RPM Package:** `cargo-generate-rpm` configuration for Fedora, RHEL, and openSUSE.
+- `[ ]` **AppImage:** Self-contained portable binary bundle.
+- `[ ]` **Arch Linux PKGBUILD:** Arch Linux AUR recipe package.
+- `[ ]` **CI/CD Pipeline:** GitHub Actions workflow (`.github/workflows/ci.yml`) for automated building, testing, and release packaging.
