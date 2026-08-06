@@ -1,6 +1,7 @@
-use crate::core::{Canvas, Point, Tool, StrokeType};
+use crate::core::{Canvas, Point, Tool, StrokeType, MonitorMode};
 use crate::platform::PlatformBackend;
 use crate::ui::{Toolbar, ToolbarAction};
+
 use std::error::Error;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -9,9 +10,13 @@ use x11rb::protocol::xproto::{
     Rectangle, ImageFormat, ClipOrdering, ConnectionExt as _, InputFocus, Time, ModMask, GrabMode,
 };
 use x11rb::protocol::shape::{
-    SO as ShapeOp, SK as ShapeKind,
+    SO as ShapeOp, SK as ShapeKind, ConnectionExt as _,
 };
+
 use x11rb::wrapper::ConnectionExt as _;
+
+use crate::platform::tray::TrayEvent;
+use std::sync::mpsc::Receiver;
 
 pub struct X11Backend {
     width: u16,
@@ -19,6 +24,14 @@ pub struct X11Backend {
     passthrough: bool,
     active_tool: Tool,
     scale_factor: f32,
+    show_settings_menu: bool,
+    show_color_menu: bool,
+    monitor_mode: MonitorMode,
+    is_hidden: bool,
+    is_dragging: bool,
+    drag_offset_x: f32,
+    drag_offset_y: f32,
+    tray_rx: Option<Receiver<TrayEvent>>,
     
     // Persistent buffers to prevent frame allocations
     base_pixmap: Option<tiny_skia::Pixmap>,
@@ -38,6 +51,14 @@ impl X11Backend {
             passthrough: false,
             active_tool: Tool::default_pen(),
             scale_factor,
+            show_settings_menu: false,
+            show_color_menu: false,
+            monitor_mode: MonitorMode::Primary,
+            is_hidden: false,
+            is_dragging: false,
+            drag_offset_x: 0.0,
+            drag_offset_y: 0.0,
+            tray_rx: None,
             base_pixmap: None,
             active_pixmap: None,
             x11_pixels: Vec::new(),
@@ -46,7 +67,75 @@ impl X11Backend {
             prev_shape_point: None,
         }
     }
+
+
+
+    pub fn new_with_tray(tray_rx: Receiver<TrayEvent>) -> Self {
+        let mut backend = Self::new();
+        backend.tray_rx = Some(tray_rx);
+        backend
+    }
+
+    fn set_hidden(
+        &mut self,
+        conn: &impl Connection,
+        win_id: u32,
+        root: u32,
+        gc_id: u32,
+        canvas: &mut Canvas,
+        toolbar: &Toolbar,
+        hidden: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        self.is_hidden = hidden;
+        if hidden {
+            println!("Hiding Vectrace overlay window to System Tray (Offscreen 1x1 input shape for XWayland)...");
+            self.passthrough = true;
+            let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+            let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
+            let offscreen_rect = [Rectangle {
+                x: -32000,
+                y: -32000,
+                width: 1,
+                height: 1,
+            }];
+            let _ = conn.shape_rectangles(
+                ShapeOp::SET,
+                ShapeKind::INPUT,
+                ClipOrdering::UNSORTED,
+                win_id,
+                0,
+                0,
+                &offscreen_rect,
+            );
+            if let Some(ref mut pixmap) = self.base_pixmap {
+                pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            }
+            if let Some(ref mut pixmap) = self.active_pixmap {
+                pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            }
+            self.x11_pixels.clear();
+            self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            let _ = conn.flush();
+        }
+
+ else {
+            println!("Restoring Vectrace overlay window from System Tray...");
+            self.passthrough = false;
+            self.completed_strokes_dirty = true;
+            self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            self.apply_passthrough(conn, win_id, root, toolbar)?;
+            focus_x11_window(conn, root, win_id);
+            let _ = conn.flush();
+        }
+
+        Ok(())
+    }
+
+
 }
+
+
+
 
 fn detect_scale_factor() -> f32 {
     if let Ok(val) = std::env::var("GDK_SCALE") {
@@ -297,19 +386,53 @@ fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
     let _ = conn.flush();
 }
 
+fn detect_primary_monitor(conn: &impl Connection, root: u32) -> Option<(i16, i16, u16, u16)> {
+    use x11rb::protocol::randr::ConnectionExt as _;
+    if let Ok(cookie) = conn.randr_get_monitors(root, true) {
+        if let Ok(reply) = cookie.reply() {
+            for mon in &reply.monitors {
+                if mon.primary {
+                    return Some((mon.x, mon.y, mon.width, mon.height));
+                }
+            }
+            if let Some(first) = reply.monitors.first() {
+                return Some((first.x, first.y, first.width, first.height));
+            }
+        }
+    }
+    None
+}
+
+
 impl PlatformBackend for X11Backend {
     fn run(&mut self, canvas: &mut Canvas) -> Result<(), Box<dyn Error>> {
         let (conn, screen_num) = x11rb::connect(None)?;
         let screen = &conn.setup().roots[screen_num];
         
-        self.width = screen.width_in_pixels;
-        self.height = screen.height_in_pixels;
+        let root_w = screen.width_in_pixels;
+        let root_h = screen.height_in_pixels;
+
+        let primary_mon = detect_primary_monitor(&conn, screen.root);
+        let (mon_x, mon_y, mon_w, mon_h) = primary_mon.unwrap_or((0, 0, root_w, root_h));
+
+        println!("Detected Primary Monitor: {}x{}+{}+{}", mon_w, mon_h, mon_x, mon_y);
+        println!("Virtual Desktop: {}x{}", root_w, root_h);
+
+        let (win_x, win_y, win_w, win_h) = match self.monitor_mode {
+            MonitorMode::Primary => (mon_x, mon_y, mon_w, mon_h),
+            MonitorMode::All => (0, 0, root_w, root_h),
+        };
+
+        self.width = win_w;
+        self.height = win_h;
         canvas.resize(self.width as u32, self.height as u32);
         canvas.set_scale_factor(self.scale_factor);
 
-        println!("X11 Virtual Desktop Dimensions: {}x{} (Scale: {:.1}x)", self.width, self.height, self.scale_factor);
-
-        let mut toolbar = Toolbar::new_with_scale(self.width as f32, self.scale_factor);
+        let mut toolbar = Toolbar::new_with_scale(mon_w as f32, self.scale_factor);
+        if self.monitor_mode == MonitorMode::All {
+            toolbar.x += mon_x as f32;
+            toolbar.y += mon_y as f32;
+        }
 
         let (visual_id, depth) = find_32bit_visual(screen)
             .unwrap_or((screen.root_visual, screen.root_depth));
@@ -344,8 +467,8 @@ impl PlatformBackend for X11Backend {
             depth,
             win_id,
             screen.root,
-            0,
-            0,
+            win_x,
+            win_y,
             self.width,
             self.height,
             0,
@@ -353,6 +476,7 @@ impl PlatformBackend for X11Backend {
             visual_id,
             &win_aux
         )?;
+
 
         let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
         let wm_state_above = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
@@ -440,26 +564,98 @@ impl PlatformBackend for X11Backend {
         let mut pending_events: Vec<Event> = Vec::new();
 
         loop {
+            // Process any incoming TrayEvent messages from the system tray menu
+            let mut tray_events = Vec::new();
+            if let Some(ref rx) = self.tray_rx {
+                while let Ok(tray_event) = rx.try_recv() {
+                    tray_events.push(tray_event);
+                }
+            }
+
+            for tray_event in tray_events {
+                match tray_event {
+                    TrayEvent::ToggleVisibility => {
+                        let target_hidden = !self.is_hidden;
+                        self.set_hidden(&conn, win_id, screen.root, gc_id, canvas, &toolbar, target_hidden)?;
+                    }
+
+                    TrayEvent::ToggleSettingsMenu => {
+                        self.show_settings_menu = !self.show_settings_menu;
+                        println!("System Tray Action: Toggle Settings Menu = {}", self.show_settings_menu);
+                        self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                    }
+                    TrayEvent::ToggleMonitorMode => {
+                        self.monitor_mode = self.monitor_mode.toggle();
+                        println!("System Tray Action: Toggle Monitor Mode = {:?}", self.monitor_mode);
+                        let (win_x, win_y, win_w, win_h) = match self.monitor_mode {
+                            MonitorMode::Primary => (mon_x, mon_y, mon_w, mon_h),
+                            MonitorMode::All => (0, 0, root_w, root_h),
+                        };
+                        self.width = win_w;
+                        self.height = win_h;
+                        canvas.resize(self.width as u32, self.height as u32);
+                        self.x11_pixels.clear();
+                        self.completed_strokes_dirty = true;
+
+                        let _ = conn.configure_window(
+                            win_id,
+                            &x11rb::protocol::xproto::ConfigureWindowAux::new()
+                                .x(win_x as i32)
+                                .y(win_y as i32)
+                                .width(win_w as u32)
+                                .height(win_h as u32),
+                        );
+
+                        toolbar = Toolbar::new_with_scale(mon_w as f32, self.scale_factor);
+                        if self.monitor_mode == MonitorMode::All {
+                            toolbar.x += mon_x as f32;
+                            toolbar.y += mon_y as f32;
+                        }
+                        self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                    }
+                    TrayEvent::TogglePassthrough => {
+                        self.passthrough = !self.passthrough;
+                        println!("System Tray Action: Toggle Passthrough = {}", self.passthrough);
+                        self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                    }
+                    TrayEvent::CycleBackground => {
+                        let mode = canvas.cycle_background_mode();
+                        println!("System Tray Action: Cycle Background = {:?}", mode);
+                    }
+                    TrayEvent::ClearCanvas => {
+                        canvas.clear();
+                        println!("System Tray Action: Clear Canvas");
+                    }
+                    TrayEvent::Exit => {
+                        println!("System Tray Action: Exit application");
+                        return Ok(());
+                    }
+                }
+                self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+            }
+
+
             let event = if let Some(ev) = pending_events.pop() {
-                ev
+                Some(ev)
+            } else if let Ok(Some(ev)) = conn.poll_for_event() {
+                Some(ev)
             } else {
+                None
+            };
+
+            if event.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(16));
                 if let Some(ref s) = canvas.current_stroke() {
                     if s.stroke_type == StrokeType::Laser && !s.points.is_empty() {
-                        if let Ok(Some(ev)) = conn.poll_for_event() {
-                            ev
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_millis(16));
-                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
-                            self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
-                            continue;
-                        }
-                    } else {
-                        conn.wait_for_event()?
+                        let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
+                        self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                     }
-                } else {
-                    conn.wait_for_event()?
                 }
-            };
+                continue;
+            }
+
+            let event = event.unwrap();
+
 
             match event {
                 Event::Expose(_) => {
@@ -473,7 +669,7 @@ impl PlatformBackend for X11Backend {
 
                         focus_x11_window(&conn, screen.root, win_id);
 
-                        if let Some(action) = toolbar.handle_click(click_x, click_y) {
+                        if let Some(action) = toolbar.handle_click(click_x, click_y, self.show_settings_menu, self.show_color_menu) {
                             if canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text) {
                                 canvas.finish_current_stroke();
                             }
@@ -482,8 +678,15 @@ impl PlatformBackend for X11Backend {
                             self.completed_strokes_dirty = true;
 
                             match action {
+                                ToolbarAction::StartDrag => {
+                                    self.is_dragging = true;
+                                    self.drag_offset_x = click_x - toolbar.x;
+                                    self.drag_offset_y = click_y - toolbar.y;
+                                    println!("Started dragging toolbar from ({:.0}, {:.0})", toolbar.x, toolbar.y);
+                                }
                                 ToolbarAction::SelectTool(tool) => {
                                     self.active_tool = tool;
+                                    self.show_color_menu = false;
                                     if matches!(tool, Tool::Text { .. }) {
                                         focus_x11_window(&conn, screen.root, win_id);
                                     }
@@ -491,11 +694,20 @@ impl PlatformBackend for X11Backend {
                                 }
                                 ToolbarAction::SelectShape(kind) => {
                                     self.active_tool = Tool::default_shape(kind);
+                                    self.show_color_menu = false;
                                     println!("Selected shape: {:?}", kind);
                                 }
                                 ToolbarAction::SetColor(color) => {
                                     self.active_tool.set_color(color);
+                                    self.show_color_menu = false;
                                     println!("Set active tool color to: {:?}", color);
+                                    self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                                }
+                                ToolbarAction::ToggleColorMenu => {
+                                    self.show_color_menu = !self.show_color_menu;
+                                    self.show_settings_menu = false;
+                                    println!("Toggled Color Menu: {}", self.show_color_menu);
+                                    self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                                 }
                                 ToolbarAction::ToggleBackgroundMode => {
                                     let mode = canvas.cycle_background_mode();
@@ -510,13 +722,58 @@ impl PlatformBackend for X11Backend {
                                     println!("Toggled Click-Through: {}", self.passthrough);
                                     self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                                 }
+                                ToolbarAction::ToggleSettingsMenu => {
+                                    self.show_settings_menu = !self.show_settings_menu;
+                                    self.show_color_menu = false;
+                                    println!("Toggled Settings Menu: {}", self.show_settings_menu);
+                                    self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                                }
+                                ToolbarAction::ToggleMonitorMode => {
+                                    self.monitor_mode = self.monitor_mode.toggle();
+                                    println!("Switched Monitor Mode: {:?}", self.monitor_mode);
+
+                                    let (win_x, win_y, win_w, win_h) = match self.monitor_mode {
+                                        MonitorMode::Primary => (mon_x, mon_y, mon_w, mon_h),
+                                        MonitorMode::All => (0, 0, root_w, root_h),
+                                    };
+
+                                    self.width = win_w;
+                                    self.height = win_h;
+                                    canvas.resize(self.width as u32, self.height as u32);
+                                    self.x11_pixels.clear();
+                                    self.completed_strokes_dirty = true;
+
+                                    let _ = conn.configure_window(
+                                        win_id,
+                                        &x11rb::protocol::xproto::ConfigureWindowAux::new()
+                                            .x(win_x as i32)
+                                            .y(win_y as i32)
+                                            .width(win_w as u32)
+                                            .height(win_h as u32),
+                                    );
+
+                                    toolbar = Toolbar::new_with_scale(mon_w as f32, self.scale_factor);
+                                    if self.monitor_mode == MonitorMode::All {
+                                        toolbar.x += mon_x as f32;
+                                        toolbar.y += mon_y as f32;
+                                    }
+                                    self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
+                                }
+
+                                ToolbarAction::MinimizeToTray => {
+                                    self.set_hidden(&conn, win_id, screen.root, gc_id, canvas, &toolbar, true)?;
+                                }
+
                                 ToolbarAction::Exit => {
                                     println!("Exiting via toolbar...");
                                     break;
                                 }
+
                             }
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
-                        } else if !self.passthrough {
+                        }
+
+ else if !self.passthrough {
                             let now_ms = crate::core::canvas::current_time_ms();
 
                             if matches!(self.active_tool, Tool::Text { .. }) {
@@ -549,23 +806,51 @@ impl PlatformBackend for X11Backend {
                     }
                 }
                 Event::MotionNotify(e) => {
+                    let mut move_x = e.event_x as f32;
+                    let mut move_y = e.event_y as f32;
+
+                    while let Ok(Some(next_evt)) = conn.poll_for_event() {
+                        if let Event::MotionNotify(next_e) = next_evt {
+                            move_x = next_e.event_x as f32;
+                            move_y = next_e.event_y as f32;
+                        } else {
+                            pending_events.push(next_evt);
+                            break;
+                        }
+                    }
+
+                    if self.is_dragging {
+                        let old_x = toolbar.x;
+                        let old_y = toolbar.y;
+
+                        let new_x = (move_x - self.drag_offset_x).max(0.0).min(self.width as f32 - toolbar.width);
+                        let new_y = (move_y - self.drag_offset_y).max(0.0).min(self.height as f32 - toolbar.height);
+                        toolbar.x = new_x;
+                        toolbar.y = new_y;
+
+                        let dirty_x = (old_x.min(toolbar.x) - 10.0).max(0.0) as u16;
+                        let dirty_y = (old_y.min(toolbar.y) - 10.0).max(0.0) as u16;
+                        let dirty_w = (old_x.max(toolbar.x) + toolbar.width + 10.0 - dirty_x as f32).min(self.width as f32) as u16;
+                        let dirty_h = (old_y.max(toolbar.y) + toolbar.height + 150.0 - dirty_y as f32).min(self.height as f32) as u16;
+
+                        let dirty_rect = Rectangle {
+                            x: dirty_x as i16,
+                            y: dirty_y as i16,
+                            width: dirty_w,
+                            height: dirty_h,
+                        };
+
+                        self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, Some(dirty_rect))?;
+                        continue;
+                    }
+
                     if canvas.current_stroke().is_some() && !self.passthrough {
                         if matches!(self.active_tool, Tool::Text { .. }) {
                             continue;
                         }
 
-                        let mut last_x = e.event_x as f32;
-                        let mut last_y = e.event_y as f32;
-
-                        while let Ok(Some(next_evt)) = conn.poll_for_event() {
-                            if let Event::MotionNotify(next_e) = next_evt {
-                                last_x = next_e.event_x as f32;
-                                last_y = next_e.event_y as f32;
-                            } else {
-                                pending_events.push(next_evt);
-                                break;
-                            }
-                        }
+                        let last_x = move_x;
+                        let last_y = move_y;
 
                         let now_ms = crate::core::canvas::current_time_ms();
 
@@ -617,15 +902,24 @@ impl PlatformBackend for X11Backend {
                     }
                 }
                 Event::ButtonRelease(e) => {
-                    if e.detail == 1 && canvas.current_stroke().is_some() {
-                        self.prev_shape_point = None;
-                        if !matches!(self.active_tool, Tool::Text { .. }) && !matches!(self.active_tool, Tool::Spotlight { .. }) {
-                            canvas.finish_current_stroke();
-                            self.completed_strokes_dirty = true;
+                    if e.detail == 1 {
+                        if self.is_dragging {
+                            self.is_dragging = false;
+                            self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                        }
+                        if canvas.current_stroke().is_some() {
+                            self.prev_shape_point = None;
+                            if !matches!(self.active_tool, Tool::Text { .. }) && !matches!(self.active_tool, Tool::Spotlight { .. }) {
+                                canvas.finish_current_stroke();
+                                self.completed_strokes_dirty = true;
+                                self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                            }
                         }
                     }
                 }
+
+
                 Event::KeyPress(e) => {
                     let keysym = keycode_to_keysym(e.detail, e.state.into());
 
@@ -751,14 +1045,17 @@ impl PlatformBackend for X11Backend {
 
 impl X11Backend {
     fn apply_passthrough(&self, conn: &impl Connection, win_id: u32, root: u32, toolbar: &Toolbar) -> Result<(), Box<dyn Error>> {
-        if self.passthrough {
+
+
+        if self.is_hidden {
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
-            let rect = Rectangle {
-                x: toolbar.x as i16,
-                y: toolbar.y as i16,
-                width: toolbar.width as u16,
-                height: toolbar.height as u16,
-            };
+            let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
+            let offscreen_rect = [Rectangle {
+                x: -32000,
+                y: -32000,
+                width: 1,
+                height: 1,
+            }];
             x11rb::protocol::shape::rectangles(
                 conn,
                 ShapeOp::SET,
@@ -767,7 +1064,43 @@ impl X11Backend {
                 win_id,
                 0,
                 0,
-                &[rect],
+                &offscreen_rect,
+            )?;
+            conn.flush()?;
+            return Ok(());
+        }
+
+        if self.passthrough {
+            let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+            let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
+            let mut rects = vec![Rectangle {
+
+                x: toolbar.x as i16,
+                y: toolbar.y as i16,
+                width: toolbar.width as u16,
+                height: toolbar.height as u16,
+            }];
+            if self.show_settings_menu {
+                let menu_x = toolbar.x + 520.0 * toolbar.scale_factor;
+                let menu_y = toolbar.y + toolbar.height + 8.0 * toolbar.scale_factor;
+                let menu_w = 250.0 * toolbar.scale_factor;
+                let menu_h = 135.0 * toolbar.scale_factor;
+                rects.push(Rectangle {
+                    x: menu_x as i16,
+                    y: menu_y as i16,
+                    width: menu_w as u16,
+                    height: menu_h as u16,
+                });
+            }
+            x11rb::protocol::shape::rectangles(
+                conn,
+                ShapeOp::SET,
+                ShapeKind::INPUT,
+                ClipOrdering::UNSORTED,
+                win_id,
+                0,
+                0,
+                &rects,
             )?;
         } else {
             focus_x11_window(conn, root, win_id);
@@ -856,7 +1189,22 @@ impl X11Backend {
             }
         }
 
-        toolbar.draw(active, self.active_tool, self.passthrough, canvas.background_mode);
+        if !self.is_hidden {
+            toolbar.draw(
+                active,
+                self.active_tool,
+                self.passthrough,
+                canvas.background_mode,
+                self.show_settings_menu,
+                self.show_color_menu,
+                self.monitor_mode,
+            );
+        } else {
+
+            active.fill(tiny_skia::Color::TRANSPARENT);
+        }
+
+
 
         let src = active.data();
         let mut sub_pixels = vec![0u8; (rw * rh * 4) as usize];
