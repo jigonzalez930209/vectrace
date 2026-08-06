@@ -260,6 +260,7 @@ pub struct Canvas {
     redo_stack: Vec<Command>,
     pub background_mode: BackgroundMode,
     pub scale_factor: f32,
+    revision: u64,
 }
 
 impl Canvas {
@@ -273,7 +274,12 @@ impl Canvas {
             redo_stack: Vec::new(),
             background_mode: BackgroundMode::Transparent,
             scale_factor: 1.0,
+            revision: 0,
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn set_scale_factor(&mut self, scale: f32) {
@@ -286,6 +292,7 @@ impl Canvas {
             BackgroundMode::Blackboard => BackgroundMode::Whiteboard,
             BackgroundMode::Whiteboard => BackgroundMode::Transparent,
         };
+        self.revision += 1;
         self.background_mode
     }
 
@@ -311,11 +318,13 @@ impl Canvas {
         }
         self.current_stroke = Some(stroke);
         self.redo_stack.clear();
+        self.revision += 1;
     }
 
     pub fn add_point_to_current_stroke(&mut self, point: Point) {
         if let Some(ref mut stroke) = self.current_stroke {
             stroke.add_point(point);
+            self.revision += 1;
         }
     }
 
@@ -326,10 +335,12 @@ impl Canvas {
                 self.undo_stack.push(Command::AddStroke(stroke));
             }
         }
+        self.revision += 1;
     }
 
     pub fn cancel_current_stroke(&mut self) {
         self.current_stroke = None;
+        self.revision += 1;
     }
 
     pub fn clear(&mut self) {
@@ -337,6 +348,7 @@ impl Canvas {
             let removed = std::mem::take(&mut self.strokes);
             self.undo_stack.push(Command::Clear(removed));
             self.redo_stack.clear();
+            self.revision += 1;
         }
         self.current_stroke = None;
     }
@@ -352,6 +364,7 @@ impl Canvas {
                 }
             }
             self.redo_stack.push(cmd);
+            self.revision += 1;
             true
         } else {
             false
@@ -369,6 +382,7 @@ impl Canvas {
                 }
             }
             self.undo_stack.push(cmd);
+            self.revision += 1;
             true
         } else {
             false
@@ -1012,7 +1026,7 @@ mod tests {
 
     #[test]
     fn test_datetime_conversion() {
-        let (y, m, d, h, min, s) = secs_to_datetime(1700000000);
+        let (y, m, d, _h, _min, _s) = secs_to_datetime(1700000000);
         assert_eq!(y, 2023);
         assert_eq!(m, 11);
         assert_eq!(d, 14);
