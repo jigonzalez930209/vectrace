@@ -88,10 +88,10 @@ vectrace/
 
 ---
 
-### [ ] Phase 6: Multi-Distro Packaging & CI/CD (Next Phase)
-- `[ ]` **Desktop System Integration:** Desktop entry file (`com.vectrace.Vectrace.desktop`) and SVG icon (`vectrace.svg`).
-- `[ ]` **DEB Package:** `cargo-deb` configuration for Debian, Ubuntu, and Linux Mint.
-- `[ ]` **RPM Package:** `cargo-generate-rpm` configuration for Fedora, RHEL, and openSUSE.
-- `[ ]` **AppImage:** Self-contained portable binary bundle.
-- `[ ]` **Arch Linux PKGBUILD:** Arch Linux AUR recipe package.
-- `[ ]` **CI/CD Pipeline:** GitHub Actions workflow (`.github/workflows/ci.yml`) for automated building, testing, and release packaging.
+### [x] Phase 6: Multi-Distro Packaging & CI/CD
+- `[x]` **Desktop System Integration:** Desktop entry file (`com.vectrace.Vectrace.desktop`) and SVG icon (`vectrace.svg`).
+- `[x]` **DEB Package:** `cargo-deb` configuration for Debian, Ubuntu, and Linux Mint.
+- `[x]` **RPM Package:** `cargo-generate-rpm` configuration for Fedora, RHEL, and openSUSE.
+- `[x]` **AppImage:** Self-contained portable binary bundle.
+- `[x]` **Arch Linux PKGBUILD:** Arch Linux AUR recipe package.
+- `[x]` **CI/CD Pipeline:** GitHub Actions workflow (`.github/workflows/ci.yml`) for automated building, testing, and release packaging.

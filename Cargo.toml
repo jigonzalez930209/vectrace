@@ -2,6 +2,12 @@
 name = "vectrace"
 version = "0.1.0"
 edition = "2024"
+authors = ["Vectrace Developers"]
+description = "Agnostic vector screen marker and drawing overlay for X11 and Wayland"
+repository = "https://github.com/jigonzalez930209/vectrace"
+license = "MIT OR Apache-2.0"
+keywords = ["screen-marker", "drawing", "wayland", "x11", "gui"]
+categories = ["graphics", "utility"]
 
 [dependencies]
 tiny-skia = "0.11"
@@ -15,6 +21,27 @@ rustix = { version = "0.38", features = ["shm", "mm", "fs", "std"] }
 ksni = "0.3"
 tokio = { version = "1", features = ["rt", "macros"] }
 signal-hook-registry = "1.4"
+
+[package.metadata.deb]
+maintainer = "Vectrace Developers"
+copyright = "2026, Vectrace Developers"
+extended-description = """
+Vectrace is a high-performance pure-software screen marker and vector drawing overlay tool designed for Linux.
+It supports X11 and Wayland (via Layer-Shell and XDG-Shell), featuring spline stroke smoothing, glassmorphic floating toolbar, system tray integration, neon laser mode, spotlight mode, and custom shape tools.
+"""
+assets = [
+    ["target/release/vectrace", "usr/bin/vectrace", "755"],
+    ["assets/com.vectrace.Vectrace.desktop", "usr/share/applications/com.vectrace.Vectrace.desktop", "644"],
+    ["assets/vectrace.svg", "usr/share/icons/hicolor/scalable/apps/vectrace.svg", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/vectrace", dest = "/usr/bin/vectrace", mode = "0755" },
+    { source = "assets/com.vectrace.Vectrace.desktop", dest = "/usr/share/applications/com.vectrace.Vectrace.desktop", mode = "0644" },
+    { source = "assets/vectrace.svg", dest = "/usr/share/icons/hicolor/scalable/apps/vectrace.svg", mode = "0644" },
+]
+
 
 
 
