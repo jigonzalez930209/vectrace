@@ -1,0 +1,24 @@
+# Maintainer: Vectrace Developers <https://github.com/jigonzalez930209/vectrace>
+pkgname=vectrace
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Agnostic vector screen marker and drawing overlay for X11 and Wayland"
+arch=('x86_64')
+url="https://github.com/jigonzalez930209/vectrace"
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs' 'glibc' 'libx11' 'libxext' 'libxrender')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cargo build --release --locked
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+    install -Dm644 "assets/com.vectrace.Vectrace.desktop" "$pkgdir/usr/share/applications/com.vectrace.Vectrace.desktop"
+    install -Dm644 "assets/vectrace.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/vectrace.svg"
+}
