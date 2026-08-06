@@ -152,11 +152,9 @@ fn capture_desktop_background(
             None
         }
     } else {
-        // Fallback for XWayland: Request silent Portal Screenshot while window is UNMAPPED!
-        println!("X11 root get_image failed (running under XWayland). Requesting silent Portal Screenshot while unmapped...");
+        // Fallback for XWayland: Request 0-flash ScreenCast PipeWire Desktop Frame!
         match crate::platform::wayland::capture::portal::PortalClient::take_screenshot() {
             Ok(desktop_pixmap) => {
-                println!("Captured desktop background via Portal Screenshot on XWayland ({}x{})!", desktop_pixmap.width(), desktop_pixmap.height());
                 if desktop_pixmap.width() == w as u32 && desktop_pixmap.height() == h as u32 {
                     Some(desktop_pixmap)
                 } else {
@@ -170,13 +168,13 @@ fn capture_desktop_background(
                 }
             }
             Err(e) => {
-                println!("Portal Screenshot fallback on XWayland also failed: {:?}", e);
+                println!("ScreenCast PipeWire desktop capture failed: {:?}", e);
                 None
             }
         }
     };
 
-    // 3. Remap overlay window IMMEDIATELY after capturing clean desktop texture
+    // 3. Remap overlay window IMMEDIATELY
     let _ = conn.map_window(win_id);
     let _ = conn.flush();
 
@@ -414,10 +412,11 @@ impl X11Backend {
             let _ = conn.flush();
         }
 
- else {
+        else {
             println!("Restoring Vectrace overlay window from System Tray...");
             self.passthrough = false;
             self.completed_strokes_dirty = true;
+            self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
             self.apply_passthrough(conn, win_id, root, toolbar)?;
             focus_x11_window(conn, root, win_id);
