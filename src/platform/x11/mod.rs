@@ -1,3 +1,5 @@
+pub mod capture;
+
 use crate::core::{Canvas, Point, Tool, StrokeType, MonitorMode};
 use crate::platform::PlatformBackend;
 use crate::ui::{Toolbar, ToolbarAction};
@@ -97,6 +99,7 @@ fn hit_test_crop(
 
 fn capture_desktop_background(
     conn: &impl Connection,
+    win_id: u32,
     root: u32,
     w: u16,
     h: u16,
@@ -105,6 +108,13 @@ fn capture_desktop_background(
         return None;
     }
 
+    // 1. Temporarily unmap overlay window so cyan crop box & control handles are NOT on screen
+    let _ = conn.unmap_window(win_id);
+    let _ = conn.flush();
+    let _ = conn.get_input_focus().map(|c| c.reply());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // 2. Try X11 root capture
     let reply = conn.get_image(
         ImageFormat::Z_PIXMAP,
         root,
@@ -113,30 +123,64 @@ fn capture_desktop_background(
         w,
         h,
         !0,
-    ).ok()?.reply().ok()?;
+    ).ok().and_then(|c| c.reply().ok());
 
-    let data = reply.data;
-    let expected_len = (w as usize) * (h as usize) * 4;
+    let res = if let Some(reply) = reply {
+        let data = reply.data;
+        let expected_len = (w as usize) * (h as usize) * 4;
 
-    let mut pixmap = tiny_skia::Pixmap::new(w as u32, h as u32)?;
-    let rgba_data = pixmap.data_mut();
+        if data.len() >= expected_len {
+            if let Some(mut pixmap) = tiny_skia::Pixmap::new(w as u32, h as u32) {
+                let rgba_data = pixmap.data_mut();
+                for i in 0..(w as usize * h as usize) {
+                    let src_idx = i * 4;
+                    let b = data[src_idx];
+                    let g = data[src_idx + 1];
+                    let r = data[src_idx + 2];
+                    let a = 255u8;
 
-    if data.len() >= expected_len {
-        for i in 0..(w as usize * h as usize) {
-            let src_idx = i * 4;
-            let b = data[src_idx];
-            let g = data[src_idx + 1];
-            let r = data[src_idx + 2];
-            let a = 255u8;
-
-            rgba_data[src_idx] = r;
-            rgba_data[src_idx + 1] = g;
-            rgba_data[src_idx + 2] = b;
-            rgba_data[src_idx + 3] = a;
+                    rgba_data[src_idx] = r;
+                    rgba_data[src_idx + 1] = g;
+                    rgba_data[src_idx + 2] = b;
+                    rgba_data[src_idx + 3] = a;
+                }
+                Some(pixmap)
+            } else {
+                None
+            }
+        } else {
+            None
         }
-    }
+    } else {
+        // Fallback for XWayland: Request silent Portal Screenshot while window is UNMAPPED!
+        println!("X11 root get_image failed (running under XWayland). Requesting silent Portal Screenshot while unmapped...");
+        match crate::platform::wayland::capture::portal::PortalClient::take_screenshot() {
+            Ok(desktop_pixmap) => {
+                println!("Captured desktop background via Portal Screenshot on XWayland ({}x{})!", desktop_pixmap.width(), desktop_pixmap.height());
+                if desktop_pixmap.width() == w as u32 && desktop_pixmap.height() == h as u32 {
+                    Some(desktop_pixmap)
+                } else {
+                    let mut scaled = tiny_skia::Pixmap::new(w as u32, h as u32)?;
+                    let scale_x = w as f32 / desktop_pixmap.width() as f32;
+                    let scale_y = h as f32 / desktop_pixmap.height() as f32;
+                    let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
+                    let paint = tiny_skia::PixmapPaint::default();
+                    scaled.draw_pixmap(0, 0, desktop_pixmap.as_ref(), &paint, transform, None);
+                    Some(scaled)
+                }
+            }
+            Err(e) => {
+                println!("Portal Screenshot fallback on XWayland also failed: {:?}", e);
+                None
+            }
+        }
+    };
 
-    Some(pixmap)
+    // 3. Remap overlay window IMMEDIATELY after capturing clean desktop texture
+    let _ = conn.map_window(win_id);
+    let _ = conn.flush();
+
+    res
 }
 
 fn compute_crop_dirty_rect(
@@ -203,6 +247,7 @@ pub struct X11Backend {
     prev_spotlight_point: Option<Point>,
     prev_shape_point: Option<Point>,
     toast_notification: Option<crate::core::canvas::ToastNotification>,
+    cached_desktop: Option<tiny_skia::Pixmap>,
     crop_start: Option<(f32, f32)>,
     crop_current: Option<(f32, f32)>,
     crop_drag_state: CropDragState,
@@ -232,13 +277,12 @@ impl X11Backend {
             prev_spotlight_point: None,
             prev_shape_point: None,
             toast_notification: None,
+            cached_desktop: None,
             crop_start: None,
             crop_current: None,
             crop_drag_state: CropDragState::None,
         }
     }
-
-
 
     pub fn new_with_tray(tray_rx: Receiver<TrayEvent>) -> Self {
         let mut backend = Self::new();
@@ -246,83 +290,86 @@ impl X11Backend {
         backend
     }
 
-    fn trigger_save_full(&mut self, conn: &impl Connection, root: u32, canvas: &mut Canvas) {
+    fn trigger_save_full(&mut self, conn: &impl Connection, win_id: u32, root: u32, canvas: &mut Canvas) {
         let w = self.width as u32;
         let h = self.height as u32;
         if w == 0 || h == 0 { return; }
 
-        let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
-        if canvas.background_mode == crate::core::BackgroundMode::Transparent {
-            if let Some(desktop) = capture_desktop_background(conn, root, self.width, self.height) {
-                temp_pixmap = desktop;
-            } else {
-                canvas.render_background(&mut temp_pixmap);
-            }
-        } else {
-            canvas.render_background(&mut temp_pixmap);
-        }
+        let bg_mode = canvas.background_mode;
+        let doc = canvas.snapshot();
 
-        canvas.render_completed_strokes(&mut temp_pixmap);
-        if let Some(stroke) = canvas.current_stroke() {
-            if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
+        if self.cached_desktop.is_none() && bg_mode == crate::core::BackgroundMode::Transparent {
+            self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
+        }
+        let desktop_opt = self.cached_desktop.clone();
+
+        std::thread::spawn(move || {
+            let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+            if let Some(desktop_pixmap) = desktop_opt {
+                temp_pixmap = desktop_pixmap;
+            }
+
+            for stroke in &doc.strokes {
                 crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
             }
-        }
 
-        match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, None) {
-            Ok(path) => {
-                println!("Full Screen saved to: {}", path);
-                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Saved: {}", path), 3000));
+            match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, None) {
+                Ok(path) => {
+                    println!("Full Screen saved to: {}", path);
+                }
+                Err(e) => {
+                    println!("Failed to save full screen: {}", e);
+                }
             }
-            Err(e) => {
-                println!("Failed to save full screen: {}", e);
-                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Error: {}", e), 3000));
-            }
-        }
+        });
+
+        self.toast_notification = Some(crate::core::canvas::ToastNotification::new("Saved Full Screen".to_string(), 3000));
     }
 
-    fn trigger_save_crop(&mut self, conn: &impl Connection, root: u32, canvas: &mut Canvas, sx: f32, sy: f32, cx: f32, cy: f32) {
+    fn trigger_save_crop(&mut self, conn: &impl Connection, win_id: u32, root: u32, canvas: &mut Canvas, sx: f32, sy: f32, cx: f32, cy: f32) {
         let w = self.width as u32;
         let h = self.height as u32;
         if w == 0 || h == 0 { return; }
 
-        let min_x = (sx.min(cx)).max(0.0).min(w as f32) as u32;
-        let min_y = (sy.min(cy)).max(0.0).min(h as f32) as u32;
-        let crop_w = (sx - cx).abs() as u32;
-        let crop_h = (sy - cy).abs() as u32;
+        let scale = self.scale_factor;
+        let min_x = ((sx.min(cx) * scale).max(0.0)).min((w.saturating_sub(1)) as f32) as u32;
+        let min_y = ((sy.min(cy) * scale).max(0.0)).min((h.saturating_sub(1)) as f32) as u32;
+        let crop_w = (((sx - cx).abs() * scale) as u32).min(w - min_x);
+        let crop_h = (((sy - cy).abs() * scale) as u32).min(h - min_y);
 
         if crop_w < 4 || crop_h < 4 {
             return;
         }
 
-        let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
-        if canvas.background_mode == crate::core::BackgroundMode::Transparent {
-            if let Some(desktop) = capture_desktop_background(conn, root, self.width, self.height) {
-                temp_pixmap = desktop;
-            } else {
-                canvas.render_background(&mut temp_pixmap);
-            }
-        } else {
-            canvas.render_background(&mut temp_pixmap);
-        }
+        let bg_mode = canvas.background_mode;
+        let doc = canvas.snapshot();
 
-        canvas.render_completed_strokes(&mut temp_pixmap);
-        if let Some(stroke) = canvas.current_stroke() {
-            if stroke.stroke_type != StrokeType::Laser && stroke.stroke_type != StrokeType::Spotlight {
+        if self.cached_desktop.is_none() && bg_mode == crate::core::BackgroundMode::Transparent {
+            self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
+        }
+        let desktop_opt = self.cached_desktop.clone();
+
+        std::thread::spawn(move || {
+            let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+            if let Some(desktop_pixmap) = desktop_opt {
+                temp_pixmap = desktop_pixmap;
+            }
+
+            for stroke in &doc.strokes {
                 crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
             }
-        }
 
-        match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, Some((min_x, min_y, crop_w, crop_h))) {
-            Ok(path) => {
-                println!("Cropped Region ({}x{}) saved to: {}", crop_w, crop_h, path);
-                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Saved Crop: {}", path), 3000));
+            match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, Some((min_x, min_y, crop_w, crop_h))) {
+                Ok(path) => {
+                    println!("Cropped Region ({}x{}) saved to: {}", crop_w, crop_h, path);
+                }
+                Err(e) => {
+                    println!("Failed to save crop region: {}", e);
+                }
             }
-            Err(e) => {
-                println!("Failed to save crop region: {}", e);
-                self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Crop Error: {}", e), 3000));
-            }
-        }
+        });
+
+        self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Saved Crop ({}x{})", crop_w, crop_h), 3000));
     }
 
     fn set_hidden(
@@ -879,7 +926,7 @@ impl PlatformBackend for X11Backend {
                         println!("System Tray Action: Clear Canvas");
                     }
                     TrayEvent::SaveFull => {
-                        self.trigger_save_full(&conn, screen.root, canvas);
+                        self.trigger_save_full(&conn, win_id, screen.root, canvas);
                     }
                     TrayEvent::SaveRegion => {
                         self.active_tool = Tool::default_select_region();
@@ -990,11 +1037,11 @@ impl PlatformBackend for X11Backend {
                                     println!("Canvas cleared");
                                 }
                                 ToolbarAction::SaveFull => {
-                                    self.trigger_save_full(&conn, screen.root, canvas);
+                                    self.trigger_save_full(&conn, win_id, screen.root, canvas);
                                 }
                                 ToolbarAction::ConfirmCrop => {
                                     if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
-                                        self.trigger_save_crop(&conn, screen.root, canvas, sx, sy, cx, cy);
+                                        self.trigger_save_crop(&conn, win_id, screen.root, canvas, sx, sy, cx, cy);
                                     }
                                     self.active_tool = Tool::default_pen();
                                     self.crop_drag_state = CropDragState::None;
@@ -1361,7 +1408,7 @@ impl PlatformBackend for X11Backend {
                                     self.active_tool = Tool::default_select_region();
                                     println!("Activated Crop Selection Tool via Ctrl+Shift+S");
                                 } else {
-                                    self.trigger_save_full(&conn, screen.root, canvas);
+                                    self.trigger_save_full(&conn, win_id, screen.root, canvas);
                                 }
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                             }
