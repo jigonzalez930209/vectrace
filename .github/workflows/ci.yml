@@ -1,0 +1,105 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-and-test:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxrender-dev libwayland-dev
+
+      - name: Check Format & Compilation
+        run: cargo check --all-targets
+
+      - name: Run Tests
+        run: cargo test --verbose
+
+  build-release-packages:
+    name: Build & Package Release Artifacts
+    needs: check-and-test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxrender-dev libwayland-dev wget desktop-file-utils
+
+      - name: Install Packaging Tools
+        run: |
+          cargo install cargo-deb || true
+          cargo install cargo-generate-rpm || true
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Generate DEB Package
+        run: cargo deb --no-build
+
+      - name: Generate RPM Package
+        run: cargo generate-rpm --no-build -o target/generate-rpm/vectrace-0.1.0-1.x86_64.rpm
+
+      - name: Generate AppImage
+        run: bash packaging/appimage/build-appimage.sh
+
+      - name: Create Release Tarball
+        run: |
+          mkdir -p target/dist
+          cp target/release/vectrace target/dist/
+          cp assets/com.vectrace.Vectrace.desktop target/dist/
+          cp assets/vectrace.svg target/dist/
+          cp README.md target/dist/ 2>/dev/null || true
+          tar -czf target/vectrace-x86_64-unknown-linux-gnu.tar.gz -C target/dist .
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectrace-packages
+          path: |
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+            target/*.AppImage
+            target/*.tar.gz
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+            target/*.AppImage
+            target/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
