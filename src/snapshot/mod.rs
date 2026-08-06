@@ -1,0 +1,23 @@
+pub mod backend;
+pub mod capabilities;
+pub mod composition;
+pub mod coordinates;
+pub mod diagnostics;
+pub mod encoder;
+pub mod error;
+pub mod frame;
+pub mod metadata;
+pub mod request;
+pub mod service;
+
+pub use backend::{AnnotationOnlyBackend, CaptureSessionId, ScreenCaptureBackend};
+pub use capabilities::CaptureCapabilities;
+pub use composition::CompositionEngine;
+pub use coordinates::{DesktopLayoutGrid, LogicalPoint, LogicalSize, OutputLayout, PixelSize, ScaleFactor};
+pub use diagnostics::DiagnosticsReport;
+pub use encoder::ImageEncoder;
+pub use error::{CaptureError, CaptureErrorKind};
+pub use frame::{CapturePixelFormat, CapturedFrame, FrameMemory, OutputTransform, PixelRect};
+pub use metadata::SnapshotMetadata;
+pub use request::{CaptureRequest, CaptureTarget, CursorPolicy, OutputId, SnapshotMode};
+pub use service::SnapshotService;
