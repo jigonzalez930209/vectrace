@@ -12,15 +12,17 @@ Vectrace provides a streamlined experience using mouse gestures, floating glassm
 | `H` | Select **Highlighter** tool |
 | `L` | Select **Line** shape tool |
 | `A` | Select **Arrow** shape tool |
+| `R` | Select **Rectangle** shape tool |
+| `O` | Select **Oval** shape tool |
 | `E` | Select **Eraser** tool |
 | `T` | Select **Text** tool |
 | `K` | Select **Neon Laser** pointer tool |
-| `O` | Select **Spotlight** dimmer mode |
+| `N` | Select **Spotlight** dimmer mode |
 | `M` | Minimize overlay to System Tray |
 | `Ctrl + Shift + S` / `Ctrl + C` | Activate Crop Selection Tool |
 | `S` | Capture Full Screen (or confirm Crop if selection is active) |
 | `U` | Undo last drawn stroke |
-| `R` | Redo last undone stroke |
+| `Ctrl + R` | Redo last undone stroke |
 | `C` | Clear canvas drawings |
 | `B` | Cycle Background Mode (Clear ➔ Blackboard ➔ Whiteboard) |
 | `ESC` | Cancel current tool / Clear selection / Exit application |
