@@ -28,7 +28,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxext-dev libxrender-dev libwayland-dev
+          sudo apt-get install -y libx11-dev libxext-dev libxrender-dev libwayland-dev libpipewire-0.3-dev libdbus-1-dev libclang-dev
 
       - name: Check Format & Compilation
         run: cargo check --all-targets
@@ -54,7 +54,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxext-dev libxrender-dev libwayland-dev wget desktop-file-utils
+          sudo apt-get install -y libx11-dev libxext-dev libxrender-dev libwayland-dev libpipewire-0.3-dev libdbus-1-dev libclang-dev wget desktop-file-utils
 
       - name: Install Packaging Tools
         run: |
