@@ -47,6 +47,7 @@ pub struct WaylandState {
     pub last_button_time: u32,
     
     pub shift_pressed: bool,
+    pub ctrl_pressed: bool,
     pub pending_key: Option<(u32, u32)>, // keycode, state
 }
 
@@ -71,6 +72,7 @@ impl WaylandState {
             button_pressed: false,
             last_button_time: 0,
             shift_pressed: false,
+            ctrl_pressed: false,
             pending_key: None,
         }
     }
@@ -200,6 +202,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
             };
             if key == 42 || key == 54 {
                 state.shift_pressed = is_pressed == 1;
+            }
+            // Left Ctrl (29) / Right Ctrl (97) — Linux evdev codes
+            if key == 29 || key == 97 {
+                state.ctrl_pressed = is_pressed == 1;
             }
             state.pending_key = Some((key, is_pressed));
         }
@@ -362,7 +368,9 @@ impl PlatformBackend for WaylandBackend {
             );
             layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
             layer_surface.set_exclusive_zone(-1);
-            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+            // Exclusive: tool shortcuts work reliably. When click-through is on we
+            // switch to None so keystrokes reach the application underneath.
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
             state.layer_shell = Some(layer_shell);
             state.layer_surface = Some(layer_surface);
         } else {
@@ -423,7 +431,7 @@ impl PlatformBackend for WaylandBackend {
 
         let mut prev_button_pressed = false;
 
-        apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+        apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
 
         loop {
             // Process any incoming TrayEvent messages from system tray
@@ -434,13 +442,13 @@ impl PlatformBackend for WaylandBackend {
                             self.is_hidden = !self.is_hidden;
                             self.passthrough = self.is_hidden;
                             println!("System Tray Action: Toggle Visibility (is_hidden = {})", self.is_hidden);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
 
                         TrayEvent::ToggleSettingsMenu => {
                             self.show_settings_menu = !self.show_settings_menu;
                             println!("System Tray Action: Toggle Settings Menu = {}", self.show_settings_menu);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         TrayEvent::ToggleMonitorMode => {
                             self.monitor_mode = self.monitor_mode.toggle();
@@ -449,7 +457,7 @@ impl PlatformBackend for WaylandBackend {
                         TrayEvent::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
                             println!("System Tray Action: Toggle Passthrough = {}", self.passthrough);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
 
                         TrayEvent::CycleBackground => {
@@ -506,13 +514,13 @@ impl PlatformBackend for WaylandBackend {
                             self.active_tool.set_color(color);
                             self.show_color_menu = false;
                             println!("Set color: {:?}", color);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleColorMenu => {
                             self.show_color_menu = !self.show_color_menu;
                             self.show_settings_menu = false;
                             println!("Toggled Color Menu: {}", self.show_color_menu);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleBackgroundMode => {
                             let mode = canvas.cycle_background_mode();
@@ -528,12 +536,12 @@ impl PlatformBackend for WaylandBackend {
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
                             println!("Toggled Click-Through: {}", self.passthrough);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleSettingsMenu => {
                             self.show_settings_menu = !self.show_settings_menu;
                             println!("Toggled Settings Menu: {}", self.show_settings_menu);
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleMonitorMode => {
                             self.monitor_mode = self.monitor_mode.toggle();
@@ -543,7 +551,7 @@ impl PlatformBackend for WaylandBackend {
                             self.is_hidden = true;
                             self.passthrough = true;
                             println!("Minimized overlay to System Tray.");
-                            apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
 
 
@@ -601,9 +609,28 @@ impl PlatformBackend for WaylandBackend {
 
             if let Some((key_code, is_pressed)) = state.pending_key.take() {
                 if is_pressed == 1 {
-                    let is_typing_text = canvas.current_stroke().map_or(false, |s| s.stroke_type == StrokeType::Text);
+                    // Click-through: keyboard interactivity is None, but ignore
+                    // shortcuts if any key still arrives so the app below can type.
+                    if self.passthrough {
+                        // allow nothing — Space toggle is via toolbar while click-through
+                    } else {
+                    let is_typing_text = matches!(self.active_tool, Tool::Text { .. });
 
                     if is_typing_text {
+                        if canvas.current_stroke().is_none() {
+                            if let Some(mut stroke) = self.active_tool.create_stroke() {
+                                stroke.points = vec![Point::new(
+                                    state.width as f32 / 2.0,
+                                    state.height as f32 / 2.0,
+                                    1.0,
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64,
+                                )];
+                                canvas.start_stroke(stroke);
+                            }
+                        }
                         match key_code {
                             28 => { // Enter
                                 canvas.finish_current_stroke();
@@ -636,10 +663,68 @@ impl PlatformBackend for WaylandBackend {
                                 println!("Exiting...");
                                 break;
                             }
+                            25 => { // P - Pencil
+                                let mut tool = Tool::default_pen();
+                                if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                self.active_tool = tool;
+                            }
+                            35 => { // H - Highlighter
+                                let mut tool = Tool::default_highlighter();
+                                if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                self.active_tool = tool;
+                            }
+                            38 => { // L - Line
+                                let mut tool = Tool::default_shape(crate::core::ShapeKind::Line);
+                                if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                self.active_tool = tool;
+                            }
+                            30 => { // A - Arrow
+                                let mut tool = Tool::default_shape(crate::core::ShapeKind::Arrow);
+                                if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                self.active_tool = tool;
+                            }
+                            19 => { // R - Rectangle / Ctrl+R - Redo
+                                if state.ctrl_pressed {
+                                    if canvas.redo() {
+                                        println!("Redo stroke");
+                                    }
+                                } else {
+                                    let mut tool = Tool::default_shape(crate::core::ShapeKind::Rectangle);
+                                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                    self.active_tool = tool;
+                                }
+                            }
+                            24 => { // O - Oval
+                                let mut tool = Tool::default_shape(crate::core::ShapeKind::Oval);
+                                if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                self.active_tool = tool;
+                            }
+                            37 => { // K - Laser
+                                self.active_tool = Tool::default_laser();
+                            }
+                            49 => { // N - Spotlight
+                                self.active_tool = Tool::default_spotlight();
+                            }
+                            18 => { // E - Eraser
+                                self.active_tool = Tool::default_eraser();
+                            }
+                            20 => { // T - Text
+                                let mut tool = Tool::default_text();
+                                if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                                self.active_tool = tool;
+                            }
+                            31 => { // S - Save Full
+                                trigger_wayland_save_full(canvas, state.width as u32, state.height as u32, &surface, &wl_buf, &mut event_queue, &mut state);
+                            }
+                            50 => { // M - Minimize
+                                self.is_hidden = true;
+                                self.passthrough = true;
+                                apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            }
                             57 => { // Space
                                 self.passthrough = !self.passthrough;
                                 println!("Toggled Click-Through: {}", self.passthrough);
-                                apply_wayland_passthrough(&compositor, &surface, self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                                apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                             }
                             48 => { // B
                                 let mode = canvas.cycle_background_mode();
@@ -650,11 +735,6 @@ impl PlatformBackend for WaylandBackend {
                                     println!("Undo stroke");
                                 }
                             }
-                            19 => { // R
-                                if canvas.redo() {
-                                    println!("Redo stroke");
-                                }
-                            }
                             46 => { // C
                                 canvas.clear();
                                 println!("Canvas cleared");
@@ -662,6 +742,7 @@ impl PlatformBackend for WaylandBackend {
                             _ => {}
                         }
                     }
+                    } // end !passthrough
                 }
             }
 
@@ -714,6 +795,7 @@ impl PlatformBackend for WaylandBackend {
 fn apply_wayland_passthrough(
     compositor: &wl_compositor::WlCompositor,
     surface: &wl_surface::WlSurface,
+    layer_surface: Option<&ZwlrLayerSurfaceV1>,
     passthrough: bool,
     show_settings_menu: bool,
     show_color_menu: bool,
@@ -721,6 +803,8 @@ fn apply_wayland_passthrough(
     qh: &QueueHandle<WaylandState>,
 ) {
     if passthrough {
+        // Pointer hits only the toolbar/menus; keyboard is released so typing
+        // goes to the application underneath the overlay.
         let region = compositor.create_region(qh, ());
         region.add(
             toolbar.x as i32,
@@ -744,6 +828,15 @@ fn apply_wayland_passthrough(
         }
         surface.set_input_region(Some(&region));
         region.destroy();
+        if let Some(ls) = layer_surface {
+            ls.set_keyboard_interactivity(KeyboardInteractivity::None);
+        }
+    } else {
+        // Full overlay captures pointer + exclusive keyboard for tool shortcuts.
+        surface.set_input_region(None);
+        if let Some(ls) = layer_surface {
+            ls.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        }
     }
     surface.commit();
 }
