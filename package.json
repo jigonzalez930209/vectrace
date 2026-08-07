@@ -1,0 +1,14 @@
+{
+  "name": "vectrace-docs",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "docs:dev": "pnpm vitepress dev docs",
+    "docs:build": "pnpm vitepress build docs",
+    "docs:preview": "pnpm vitepress preview docs"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3"
+  }
+}
