@@ -149,23 +149,18 @@ impl DesktopLayoutGrid {
             let canvas_w = total_width as usize;
             let canvas_data = canvas.data_mut();
 
+            // PERFORMANCE: Copy full rows via memcpy instead of pixel-by-pixel loop.
             for y in 0..frame_h {
                 let target_y = dest_y as usize + y;
                 if target_y >= total_height as usize {
                     break;
                 }
-
-                for x in 0..frame_w {
-                    let target_x = dest_x as usize + x;
-                    if target_x >= canvas_w {
-                        break;
-                    }
-
-                    let src_idx = (y * frame_w + x) * 4;
-                    let dst_idx = (target_y * canvas_w + target_x) * 4;
-
-                    canvas_data[dst_idx..dst_idx + 4].copy_from_slice(&norm_rgba[src_idx..src_idx + 4]);
-                }
+                // Clamp width to avoid writing past canvas bounds
+                let copy_w = frame_w.min(canvas_w - dest_x as usize);
+                let src_start = y * frame_w * 4;
+                let dst_start = (target_y * canvas_w + dest_x as usize) * 4;
+                canvas_data[dst_start..dst_start + copy_w * 4]
+                    .copy_from_slice(&norm_rgba[src_start..src_start + copy_w * 4]);
             }
         }
 

@@ -52,46 +52,42 @@ impl CompositionEngine {
         }
 
         let mut output = vec![0u8; width * height * 4];
+        let row_bytes = width * 4;
 
-        for y in 0..height {
-            let src_row_start = y * stride;
-            let dst_row_start = y * width * 4;
-
-            for x in 0..width {
-                let src_idx = src_row_start + x * 4;
-                let dst_idx = dst_row_start + x * 4;
-
-                let (r, g, b, a) = match frame.format {
-                    CapturePixelFormat::Rgba8888 => (
-                        raw_bytes[src_idx],
-                        raw_bytes[src_idx + 1],
-                        raw_bytes[src_idx + 2],
-                        raw_bytes[src_idx + 3],
-                    ),
-                    CapturePixelFormat::Rgbx8888 => (
-                        raw_bytes[src_idx],
-                        raw_bytes[src_idx + 1],
-                        raw_bytes[src_idx + 2],
-                        255,
-                    ),
-                    CapturePixelFormat::Bgra8888 => (
-                        raw_bytes[src_idx + 2],
-                        raw_bytes[src_idx + 1],
-                        raw_bytes[src_idx],
-                        raw_bytes[src_idx + 3],
-                    ),
-                    CapturePixelFormat::Bgrx8888 => (
-                        raw_bytes[src_idx + 2],
-                        raw_bytes[src_idx + 1],
-                        raw_bytes[src_idx],
-                        255,
-                    ),
-                };
-
-                output[dst_idx] = r;
-                output[dst_idx + 1] = g;
-                output[dst_idx + 2] = b;
-                output[dst_idx + 3] = a;
+        // PERFORMANCE: Match format once outside the pixel loop to avoid branch mispredictions.
+        // For contiguous (stride == row_bytes) Rgba/Rgbx, use a single memcpy pass.
+        match frame.format {
+            CapturePixelFormat::Rgba8888 if stride == row_bytes => {
+                output.copy_from_slice(&raw_bytes[..width * height * 4]);
+            }
+            CapturePixelFormat::Rgbx8888 if stride == row_bytes => {
+                output.copy_from_slice(&raw_bytes[..width * height * 4]);
+                for chunk in output.chunks_exact_mut(4) { chunk[3] = 255; }
+            }
+            CapturePixelFormat::Rgba8888 | CapturePixelFormat::Rgbx8888 => {
+                let force_opaque = frame.format == CapturePixelFormat::Rgbx8888;
+                for y in 0..height {
+                    let src = &raw_bytes[y * stride..y * stride + row_bytes];
+                    let dst = &mut output[y * row_bytes..(y + 1) * row_bytes];
+                    dst.copy_from_slice(src);
+                    if force_opaque {
+                        for chunk in dst.chunks_exact_mut(4) { chunk[3] = 255; }
+                    }
+                }
+            }
+            CapturePixelFormat::Bgra8888 | CapturePixelFormat::Bgrx8888 => {
+                let force_opaque = frame.format == CapturePixelFormat::Bgrx8888;
+                for y in 0..height {
+                    let src_row = &raw_bytes[y * stride..y * stride + row_bytes];
+                    let dst_row = &mut output[y * row_bytes..(y + 1) * row_bytes];
+                    // Swap R<->B channels using chunks_exact for auto-vectorization
+                    for (src_px, dst_px) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                        dst_px[0] = src_px[2]; // R <- B
+                        dst_px[1] = src_px[1]; // G
+                        dst_px[2] = src_px[0]; // B <- R
+                        dst_px[3] = if force_opaque { 255 } else { src_px[3] };
+                    }
+                }
             }
         }
 

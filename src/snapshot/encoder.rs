@@ -1,4 +1,4 @@
-use crate::core::canvas::secs_to_datetime;
+use crate::core::export::secs_to_datetime;
 use crate::snapshot::error::{CaptureError, CaptureErrorKind};
 use crate::snapshot::request::{CaptureTarget, SnapshotMode};
 use std::fs::{self, File};
