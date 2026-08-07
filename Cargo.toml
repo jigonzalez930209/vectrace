@@ -27,6 +27,7 @@ pipewire = "0.8"
 signal-hook-registry = "1.4"
 arboard = "3"
 futures-lite = "2.6.1"
+resvg = "0.45"
 
 [package.metadata.deb]
 maintainer = "Vectrace Developers"
