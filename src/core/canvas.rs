@@ -515,16 +515,13 @@ pub fn render_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
         StrokeType::Rectangle => {
             let p1 = stroke.points[0];
             let p2 = *stroke.points.last().unwrap();
-            let x = f32::min(p1.x, p2.x);
-            let y = f32::min(p1.y, p2.y);
-            let w = (p1.x - p2.x).abs();
-            let h = (p1.y - p2.y).abs();
-            if w > 0.5 && h > 0.5 {
-                pb.move_to(x, y);
-                pb.line_to(x + w, y);
-                pb.line_to(x + w, y + h);
-                pb.line_to(x, y + h);
-                pb.close();
+            // Snap to pixel grid for crisp edges while dragging/resizing.
+            let x = f32::min(p1.x, p2.x).round();
+            let y = f32::min(p1.y, p2.y).round();
+            let w = (p1.x - p2.x).abs().round().max(1.0);
+            let h = (p1.y - p2.y).abs().round().max(1.0);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) {
+                pb.push_rect(rect);
             }
         }
         StrokeType::Oval => {
@@ -567,8 +564,19 @@ pub fn render_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
 
         let mut skia_stroke = tiny_skia::Stroke::default();
         skia_stroke.width = stroke.width;
-        skia_stroke.line_cap = tiny_skia::LineCap::Round;
-        skia_stroke.line_join = tiny_skia::LineJoin::Round;
+        let is_shape = matches!(
+            stroke.stroke_type,
+            StrokeType::Rectangle | StrokeType::Oval | StrokeType::Line | StrokeType::Arrow
+        );
+        if is_shape {
+            // Sharp corners / ends look cleaner for geometric shapes than Round joins.
+            skia_stroke.line_cap = tiny_skia::LineCap::Butt;
+            skia_stroke.line_join = tiny_skia::LineJoin::Miter;
+            skia_stroke.miter_limit = 4.0;
+        } else {
+            skia_stroke.line_cap = tiny_skia::LineCap::Round;
+            skia_stroke.line_join = tiny_skia::LineJoin::Round;
+        }
 
         pixmap.stroke_path(&path, &paint, &skia_stroke, tiny_skia::Transform::identity(), None);
     }
@@ -672,21 +680,22 @@ pub fn render_text_to_pixmap(
 ) {
 
     if let Some(font) = get_system_font() {
-        let mut cur_x = start_x;
-        let baseline_y = start_y + font_size * 0.8;
+        let font_size = font_size.round().max(1.0);
+        let mut cur_x = start_x.round();
+        let baseline_y = (start_y + font_size * 0.8).round();
 
         for ch in text.chars() {
             let (metrics, bitmap) = font.rasterize(ch, font_size);
             if metrics.width > 0 && metrics.height > 0 {
-                let gx = cur_x + metrics.bounds.xmin;
-                let gy = baseline_y - metrics.bounds.ymin - metrics.height as f32;
+                let gx = (cur_x + metrics.bounds.xmin).round();
+                let gy = (baseline_y - metrics.bounds.ymin - metrics.height as f32).round();
 
                 for row in 0..metrics.height {
                     for col in 0..metrics.width {
                         let alpha_coverage = bitmap[row * metrics.width + col];
                         if alpha_coverage > 0 {
-                            let px = gx + col as f32;
-                            let py = gy + row as f32;
+                            let px = (gx + col as f32).floor();
+                            let py = (gy + row as f32).floor();
 
                             if px >= 0.0 && px < pixmap.width() as f32 && py >= 0.0 && py < pixmap.height() as f32 {
                                 let combined_a = ((color.a as u16 * alpha_coverage as u16) / 255) as u8;
@@ -694,6 +703,7 @@ pub fn render_text_to_pixmap(
                                     let mut paint = tiny_skia::Paint::default();
                                     paint.set_color(tiny_skia::Color::from_rgba8(color.r, color.g, color.b, combined_a));
                                     paint.blend_mode = blend_mode.into();
+                                    paint.anti_alias = false;
 
                                     if let Some(rect) = tiny_skia::Rect::from_xywh(px, py, 1.0, 1.0) {
                                         pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
@@ -704,7 +714,7 @@ pub fn render_text_to_pixmap(
                     }
                 }
             }
-            cur_x += metrics.advance_width;
+            cur_x = (cur_x + metrics.advance_width).round();
         }
     }
 }
@@ -732,13 +742,13 @@ impl ToastNotification {
             return;
         }
 
-        let font_size = 14.0 * scale;
-        let padding_x = 18.0 * scale;
-        let text_w = (self.message.len() as f32 * 8.0) * scale;
+        let font_size = (14.0 * scale).round().max(1.0);
+        let padding_x = (18.0 * scale).round();
+        let text_w = ((self.message.len() as f32 * 8.0) * scale).round();
         let toast_w = text_w + padding_x * 2.0;
-        let toast_h = 32.0 * scale;
-        let toast_x = (canvas_width - toast_w) / 2.0;
-        let toast_y = 60.0 * scale;
+        let toast_h = (32.0 * scale).round();
+        let toast_x = ((canvas_width - toast_w) / 2.0).round();
+        let toast_y = (60.0 * scale).round();
 
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
@@ -800,18 +810,41 @@ pub fn secs_to_datetime(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     (y as u32, m as u32, d as u32, hour, min, sec)
 }
 
-pub fn save_pixmap_to_file(pixmap: &tiny_skia::Pixmap, crop_rect: Option<(u32, u32, u32, u32)>) -> Result<String, String> {
+pub fn prepare_export_pixmap(
+    pixmap: &tiny_skia::Pixmap,
+    crop_rect: Option<(u32, u32, u32, u32)>,
+) -> Result<tiny_skia::Pixmap, String> {
+    if let Some((x, y, w, h)) = crop_rect {
+        if w == 0 || h == 0 {
+            return Err("Selection area is empty".into());
+        }
+        let int_rect = tiny_skia::IntRect::from_xywh(x as i32, y as i32, w, h)
+            .ok_or_else(|| "Invalid crop coordinates".to_string())?;
+        pixmap
+            .clone_rect(int_rect)
+            .ok_or_else(|| "Failed to crop image region".to_string())
+    } else {
+        Ok(pixmap.clone())
+    }
+}
+
+fn build_export_path(is_crop: bool) -> std::path::PathBuf {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
     let (year, month, day, hour, min, sec) = secs_to_datetime(now);
-    let is_crop = crop_rect.is_some();
     let filename = if is_crop {
-        format!("Vectrace_Crop_{:04}{:02}{:02}_{:02}{:02}{:02}.png", year, month, day, hour, min, sec)
+        format!(
+            "Vectrace_Crop_{:04}{:02}{:02}_{:02}{:02}{:02}.png",
+            year, month, day, hour, min, sec
+        )
     } else {
-        format!("Vectrace_{:04}{:02}{:02}_{:02}{:02}{:02}.png", year, month, day, hour, min, sec)
+        format!(
+            "Vectrace_{:04}{:02}{:02}_{:02}{:02}{:02}.png",
+            year, month, day, hour, min, sec
+        )
     };
 
     let target_dir = std::env::var("HOME")
@@ -822,24 +855,20 @@ pub fn save_pixmap_to_file(pixmap: &tiny_skia::Pixmap, crop_rect: Option<(u32, u
         let _ = std::fs::create_dir_all(&target_dir);
     }
 
-    let save_path = target_dir.join(&filename);
+    target_dir.join(filename)
+}
 
-    let export_pixmap = if let Some((x, y, w, h)) = crop_rect {
-        if w == 0 || h == 0 {
-            return Err("Selection area is empty".into());
-        }
-        let int_rect = tiny_skia::IntRect::from_xywh(x as i32, y as i32, w, h)
-            .ok_or_else(|| "Invalid crop coordinates".to_string())?;
-        pixmap.clone_rect(int_rect)
-            .ok_or_else(|| "Failed to crop image region".to_string())?
-    } else {
-        pixmap.clone()
-    };
-
-    export_pixmap.save_png(&save_path)
+pub fn save_export_pixmap(export_pixmap: &tiny_skia::Pixmap, is_crop: bool) -> Result<String, String> {
+    let save_path = build_export_path(is_crop);
+    export_pixmap
+        .save_png(&save_path)
         .map_err(|e| format!("Failed to save PNG image: {}", e))?;
-
     Ok(save_path.to_string_lossy().to_string())
+}
+
+pub fn save_pixmap_to_file(pixmap: &tiny_skia::Pixmap, crop_rect: Option<(u32, u32, u32, u32)>) -> Result<String, String> {
+    let export_pixmap = prepare_export_pixmap(pixmap, crop_rect)?;
+    save_export_pixmap(&export_pixmap, crop_rect.is_some())
 }
 
 pub fn render_crop_selection(pixmap: &mut tiny_skia::Pixmap, x: f32, y: f32, w: f32, h: f32, scale: f32) {
@@ -926,9 +955,13 @@ pub fn render_crop_selection(pixmap: &mut tiny_skia::Pixmap, x: f32, y: f32, w: 
     }
 
     let label = format!("{:.0} × {:.0} px", rect_w, rect_h);
-    let font_size = 12.0 * scale;
-    let label_y = if min_y - 24.0 * scale > 0.0 { min_y - 24.0 * scale } else { min_y + 8.0 * scale };
-    let label_x = min_x;
+    let font_size = (12.0 * scale).round().max(1.0);
+    let label_y = if min_y - 24.0 * scale > 0.0 {
+        (min_y - 24.0 * scale).round()
+    } else {
+        (min_y + 8.0 * scale).round()
+    };
+    let label_x = min_x.round();
 
     let mut bg_pb = PathBuilder::new();
     if let Some(rect) = tiny_skia::Rect::from_xywh(label_x, label_y, label.len() as f32 * 7.5 * scale, 20.0 * scale) {
