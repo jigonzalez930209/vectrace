@@ -1,0 +1,9 @@
+{
+  "scenario_id": "gnome-wayland",
+  "ok": true,
+  "capture_path": "mutter_screencast",
+  "width": 3840,
+  "height": 1080,
+  "overlay_hint": "xwayland",
+  "note": "Baseline shape from attach run on dual-HDMI GNOME Wayland. Geometry is host-specific; assert capture_path + overlay_hint + ok."
+}

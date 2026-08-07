@@ -1,0 +1,7 @@
+[screencast]
+# Nested/docker: never invoke slurp/wofi (they are not installed).
+chooser_type=simple
+chooser_cmd=/src/e2e/nest/accept-output.sh
+# Fallback if the chooser path is ignored by older builds:
+# chooser_type=none with empty output_name picks any output.
+output_name=WL-1

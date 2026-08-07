@@ -1,0 +1,192 @@
+# Vectrace local e2e matrix — not run by CI.
+# status: supported | attach_only | blocked
+# runner: nested | attach
+
+scenarios:
+  - id: sway-wayland
+    de: sway
+    session: wayland
+    runner: nested
+    nest_script: nest/sway.sh
+    status: supported
+    docker: true
+    expect:
+      overlay: layer_shell
+      # Prefer real ScreenCast; grim is docker fallback when portal-wlr denies Start.
+      capture_path_any: [xdg_screencast, grim]
+      min_size: [1280, 720]
+      flash_forbidden: true
+      allow_share_picker_first_run: true
+
+  - id: hyprland
+    de: hyprland
+    session: wayland
+    runner: nested
+    nest_script: nest/hyprland.sh
+    status: supported
+    expect:
+      overlay: layer_shell
+      capture_path: xdg_screencast
+      min_size: [1280, 720]
+      flash_forbidden: true
+      allow_share_picker_first_run: true
+
+  - id: weston-wayland
+    de: weston
+    session: wayland
+    runner: nested
+    nest_script: nest/weston.sh
+    status: supported
+    docker: best_effort
+    expect:
+      # Weston headless often lacks zwlr_layer_shell; capture needs a portal.
+      overlay: layer_shell_or_xwayland
+      capture_path_any: [xdg_screencast]
+      min_size: [640, 480]
+      flash_forbidden: true
+      allow_share_picker_first_run: true
+
+  - id: gnome-wayland
+    de: gnome
+    session: wayland
+    runner: attach
+    status: attach_only
+    expect:
+      overlay: xwayland
+      # Prefer Mutter; XDG ScreenCast is the intentional 0-flash fallback.
+      capture_path_any: [mutter_screencast, xdg_screencast]
+      min_size: [1920, 1080]
+      flash_forbidden: true
+
+  - id: kde-plasma-wayland
+    de: plasma
+    session: wayland
+    runner: attach
+    status: attach_only
+    expect:
+      overlay: layer_shell_or_xwayland
+      capture_path: xdg_screencast
+      min_size: [1280, 720]
+      flash_forbidden: true
+      allow_share_picker_first_run: true
+
+  - id: kde-plasma-x11
+    de: plasma
+    session: x11
+    runner: attach
+    status: attach_only
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: xfce-x11
+    de: xfce
+    session: x11
+    runner: nested
+    nest_script: nest/xephyr-openbox.sh
+    status: supported
+    docker: true
+    note: "Uses Openbox inside Xephyr as an XFCE-lite X11 proxy when xfce4-session is unavailable."
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: openbox-x11
+    de: openbox
+    session: x11
+    runner: nested
+    nest_script: nest/xephyr-openbox.sh
+    status: supported
+    docker: true
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: i3-x11
+    de: i3
+    session: x11
+    runner: nested
+    nest_script: nest/xephyr-openbox.sh
+    status: supported
+    docker: true
+    note: "Shares Xephyr nest; install i3 separately for a dedicated nest later."
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: gnome-x11
+    de: gnome
+    session: x11
+    runner: attach
+    status: attach_only
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1920, 1080]
+      flash_forbidden: true
+
+  - id: cinnamon-x11
+    de: cinnamon
+    session: x11
+    runner: attach
+    status: attach_only
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: mate-x11
+    de: mate
+    session: x11
+    runner: attach
+    status: attach_only
+    expect:
+      overlay: x11
+      capture_path: x11_root
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: budgie-wayland
+    de: budgie
+    session: wayland
+    runner: attach
+    status: blocked
+    blocked_reason: "Budgie Wayland capture path not validated yet; attach when available."
+    expect:
+      overlay: layer_shell_or_xwayland
+      capture_path_any: [mutter_screencast, xdg_screencast]
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: river-wayland
+    de: river
+    session: wayland
+    runner: nested
+    status: blocked
+    blocked_reason: "No nest script yet; contributions welcome."
+    expect:
+      overlay: layer_shell
+      capture_path: xdg_screencast
+      min_size: [1280, 720]
+      flash_forbidden: true
+
+  - id: niri-wayland
+    de: niri
+    session: wayland
+    runner: nested
+    status: blocked
+    blocked_reason: "No nest script yet; contributions welcome."
+    expect:
+      overlay: layer_shell
+      capture_path: xdg_screencast
+      min_size: [1280, 720]
+      flash_forbidden: true

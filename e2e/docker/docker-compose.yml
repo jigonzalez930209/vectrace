@@ -1,0 +1,27 @@
+# Nested scenarios that are practical inside Docker.
+# GNOME/KDE remain host attach-only (Mutter/KWin + real session).
+services:
+  e2e:
+    build:
+      context: ../..
+      dockerfile: e2e/docker/Dockerfile
+    image: vectrace-e2e:local
+    # Nested compositors / Xvfb need broad device access in practice.
+    privileged: true
+    # Entrypoint starts as root, chowns bind mounts, then runuser → e2e.
+    environment:
+      E2E_PROFILE: docker
+      PROBE_BIN: /usr/local/bin/vectrace-e2e-probe
+      HOME: /home/e2e
+      XDG_RUNTIME_DIR: /tmp/runtime-vectrace
+    volumes:
+      # Persist reports/goldens on the host
+      - ../reports:/src/e2e/reports
+      - ../goldens:/src/e2e/goldens
+      # Live-mount harness scripts so nest fixes don't need a full image rebuild
+      - ../harness.sh:/src/e2e/harness.sh:ro
+      - ../matrix.yaml:/src/e2e/matrix.yaml:ro
+      - ../nest:/src/e2e/nest:ro
+      - ../docker/entrypoint.sh:/src/e2e/docker/entrypoint.sh:ro
+    # Default: docker-safe nested matrix
+    command: ["run-docker"]
