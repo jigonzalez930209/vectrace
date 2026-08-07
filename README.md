@@ -126,15 +126,17 @@ sudo pacman -S --needed \
 | `H` | Select **Highlighter** tool |
 | `L` | Select **Line** shape tool |
 | `A` | Select **Arrow** shape tool |
+| `R` | Select **Rectangle** shape tool |
+| `O` | Select **Oval** shape tool |
 | `E` | Select **Eraser** tool |
 | `T` | Select **Text** tool |
 | `K` | Select **Neon Laser** pointer tool |
-| `O` | Select **Spotlight** dimmer mode |
+| `N` | Select **Spotlight** dimmer mode |
 | `M` | Minimize overlay to System Tray |
 | `Ctrl + Shift + S` / `Ctrl + C` | Activate **Crop Selection** tool |
 | `S` | Take **Full Screen** snapshot (or confirm Crop if selection is active) |
 | `U` | Undo last stroke |
-| `R` | Redo last stroke |
+| `Ctrl + R` | Redo last stroke |
 | `C` | Clear all drawings on screen |
 | `B` | Cycle Background Mode (Transparent ➔ Blackboard ➔ Whiteboard) |
 | `ESC` | Cancel active tool / Clear selection / Exit application |
