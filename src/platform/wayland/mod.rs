@@ -728,14 +728,14 @@ fn apply_wayland_passthrough(
             toolbar.height as i32,
         );
         if show_color_menu {
-            let menu_x = toolbar.x + 330.0 * toolbar.scale_factor;
+            let menu_x = toolbar.x + toolbar.color_btn_logical_x() * toolbar.scale_factor;
             let menu_y = toolbar.y + toolbar.height + 6.0 * toolbar.scale_factor;
             let menu_w = 150.0 * toolbar.scale_factor;
             let menu_h = 110.0 * toolbar.scale_factor;
             region.add(menu_x as i32, menu_y as i32, menu_w as i32, menu_h as i32);
         }
         if show_settings_menu {
-            let menu_x = toolbar.x + 400.0 * toolbar.scale_factor;
+            let menu_x = toolbar.x + toolbar.settings_btn_logical_x() * toolbar.scale_factor;
             let menu_y = toolbar.y + toolbar.height + 6.0 * toolbar.scale_factor;
             let menu_w = 240.0 * toolbar.scale_factor;
             let menu_h = 130.0 * toolbar.scale_factor;
@@ -772,11 +772,19 @@ fn trigger_wayland_save_full(
     let _ = event_queue.roundtrip(state);
 
     std::thread::spawn(move || {
-        let captured = crate::platform::wayland::capture::portal::PortalClient::take_screenshot();
+        let captured = if bg_mode == crate::core::BackgroundMode::Transparent {
+            Some(crate::platform::wayland::capture::portal::PortalClient::take_screenshot())
+        } else {
+            None
+        };
 
         let mut temp_pixmap = match captured {
-            Ok(desktop_pixmap) => {
-                println!("Captured desktop background via Portal Screenshot ({}x{})!", desktop_pixmap.width(), desktop_pixmap.height());
+            Some(Ok(desktop_pixmap)) => {
+                println!(
+                    "Captured desktop background ({}x{})!",
+                    desktop_pixmap.width(),
+                    desktop_pixmap.height()
+                );
                 if desktop_pixmap.width() == width && desktop_pixmap.height() == height {
                     desktop_pixmap
                 } else {
@@ -789,13 +797,17 @@ fn trigger_wayland_save_full(
                     scaled
                 }
             }
-            Err(e) => {
-                println!("Portal Screenshot failed ({:?}), checking background mode...", e);
-                let mut fallback = tiny_skia::Pixmap::new(width, height).unwrap();
-                if bg_mode != crate::core::BackgroundMode::Transparent {
-                    // render fallback if not transparent
-                }
-                fallback
+            Some(Err(e)) => {
+                println!(
+                    "Capture failed ({:?}); refusing to save empty Transparent snapshot",
+                    e
+                );
+                return;
+            }
+            None => {
+                let mut pixmap = tiny_skia::Pixmap::new(width, height).unwrap();
+                doc.render_background(&mut pixmap);
+                pixmap
             }
         };
 
@@ -803,8 +815,14 @@ fn trigger_wayland_save_full(
             crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
         }
 
-        match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, None) {
-            Ok(path) => println!("Saved Full Screen image with desktop background to: {}", path),
+        match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
+            Ok((path, copied)) => {
+                if copied {
+                    println!("Saved Full Screen and copied to clipboard: {}", path);
+                } else {
+                    println!("Saved Full Screen image to: {} (clipboard copy failed)", path);
+                }
+            }
             Err(err) => println!("Failed to save image file: {}", err),
         }
     });

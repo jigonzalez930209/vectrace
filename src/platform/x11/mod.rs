@@ -112,7 +112,8 @@ fn capture_desktop_background(
     let _ = conn.unmap_window(win_id);
     let _ = conn.flush();
     let _ = conn.get_input_focus().map(|c| c.reply());
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Give the compositor time to composite without our overlay before portal capture.
+    std::thread::sleep(std::time::Duration::from_millis(120));
 
     // 2. Try X11 root capture
     let reply = conn.get_image(
@@ -168,7 +169,7 @@ fn capture_desktop_background(
                 }
             }
             Err(e) => {
-                println!("ScreenCast PipeWire desktop capture failed: {:?}", e);
+                println!("Desktop capture failed: {:?}", e);
                 None
             }
         }
@@ -182,42 +183,22 @@ fn capture_desktop_background(
 }
 
 fn compute_crop_dirty_rect(
-    old_rect: Option<(f32, f32, f32, f32)>,
-    new_rect: Option<(f32, f32, f32, f32)>,
+    _old_rect: Option<(f32, f32, f32, f32)>,
+    _new_rect: Option<(f32, f32, f32, f32)>,
     screen_w: u16,
     screen_h: u16,
-    scale: f32,
+    _scale: f32,
 ) -> Option<Rectangle> {
-    let padding = 40.0 * scale;
-
-    let (min_x, min_y, max_x, max_y) = match (old_rect, new_rect) {
-        (Some((o1, o2, o3, o4)), Some((n1, n2, n3, n4))) => {
-            (
-                o1.min(n1).min(o3).min(n3),
-                o2.min(n2).min(o4).min(n4),
-                o1.max(n1).max(o3).max(n3),
-                o2.max(n2).max(o4).max(n4),
-            )
-        }
-        (Some((r1, r2, r3, r4)), None) | (None, Some((r1, r2, r3, r4))) => {
-            (r1.min(r3), r2.min(r4), r1.max(r3), r2.max(r4))
-        }
-        (None, None) => return None,
-    };
-
-    let rx = (min_x - padding).max(0.0) as i16;
-    let ry = (min_y - padding).max(0.0) as i16;
-    let rw = ((max_x + padding) - rx as f32).min(screen_w as f32) as u16;
-    let rh = ((max_y + padding) - ry as f32).min(screen_h as f32) as u16;
-
-    if rw == 0 || rh == 0 {
+    // Outside dimming changes across the whole screen when the crop hole moves,
+    // so partial dirty uploads look like a dark border around the selection.
+    if screen_w == 0 || screen_h == 0 {
         None
     } else {
         Some(Rectangle {
-            x: rx,
-            y: ry,
-            width: rw,
-            height: rh,
+            x: 0,
+            y: 0,
+            width: screen_w,
+            height: screen_h,
         })
     }
 }
@@ -243,7 +224,8 @@ pub struct X11Backend {
     x11_pixels: Vec<u8>,
     completed_strokes_dirty: bool,
     prev_spotlight_point: Option<Point>,
-    prev_shape_point: Option<Point>,
+    /// Previous shape AABB (min_x, min_y, max_x, max_y) for clean dirty-rect invalidation.
+    prev_shape_bounds: Option<(f32, f32, f32, f32)>,
     toast_notification: Option<crate::core::canvas::ToastNotification>,
     cached_desktop: Option<tiny_skia::Pixmap>,
     crop_start: Option<(f32, f32)>,
@@ -273,7 +255,7 @@ impl X11Backend {
             x11_pixels: Vec::new(),
             completed_strokes_dirty: true,
             prev_spotlight_point: None,
-            prev_shape_point: None,
+            prev_shape_bounds: None,
             toast_notification: None,
             cached_desktop: None,
             crop_start: None,
@@ -296,24 +278,40 @@ impl X11Backend {
         let bg_mode = canvas.background_mode;
         let doc = canvas.snapshot();
 
-        if self.cached_desktop.is_none() && bg_mode == crate::core::BackgroundMode::Transparent {
+        if bg_mode == crate::core::BackgroundMode::Transparent {
+            // Always refresh so a prior portal picker frame cannot poison the cache.
             self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
         }
         let desktop_opt = self.cached_desktop.clone();
+
+        if bg_mode == crate::core::BackgroundMode::Transparent && desktop_opt.is_none() {
+            println!("Capture failed: desktop background unavailable (Transparent mode)");
+            self.toast_notification = Some(crate::core::canvas::ToastNotification::new(
+                "Capture failed (flash path disabled)".to_string(),
+                3000,
+            ));
+            return;
+        }
 
         std::thread::spawn(move || {
             let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
             if let Some(desktop_pixmap) = desktop_opt {
                 temp_pixmap = desktop_pixmap;
+            } else {
+                doc.render_background(&mut temp_pixmap);
             }
 
             for stroke in &doc.strokes {
                 crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
             }
 
-            match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, None) {
-                Ok(path) => {
-                    println!("Full Screen saved to: {}", path);
+            match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
+                Ok((path, copied)) => {
+                    if copied {
+                        println!("Full Screen saved and copied to clipboard: {}", path);
+                    } else {
+                        println!("Full Screen saved to: {} (clipboard copy failed)", path);
+                    }
                 }
                 Err(e) => {
                     println!("Failed to save full screen: {}", e);
@@ -321,7 +319,10 @@ impl X11Backend {
             }
         });
 
-        self.toast_notification = Some(crate::core::canvas::ToastNotification::new("Saved Full Screen".to_string(), 3000));
+        self.toast_notification = Some(crate::core::canvas::ToastNotification::new(
+            "Saved + copied".to_string(),
+            3000,
+        ));
     }
 
     fn trigger_save_crop(&mut self, conn: &impl Connection, win_id: u32, root: u32, canvas: &mut Canvas, sx: f32, sy: f32, cx: f32, cy: f32) {
@@ -347,19 +348,43 @@ impl X11Backend {
         }
         let desktop_opt = self.cached_desktop.clone();
 
+        if bg_mode == crate::core::BackgroundMode::Transparent && desktop_opt.is_none() {
+            println!("Capture failed: desktop background unavailable (Transparent mode)");
+            self.toast_notification = Some(crate::core::canvas::ToastNotification::new(
+                "Capture failed (flash path disabled)".to_string(),
+                3000,
+            ));
+            return;
+        }
+
         std::thread::spawn(move || {
             let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
             if let Some(desktop_pixmap) = desktop_opt {
                 temp_pixmap = desktop_pixmap;
+            } else {
+                doc.render_background(&mut temp_pixmap);
             }
 
             for stroke in &doc.strokes {
                 crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
             }
 
-            match crate::core::canvas::save_pixmap_to_file(&temp_pixmap, Some((min_x, min_y, crop_w, crop_h))) {
-                Ok(path) => {
-                    println!("Cropped Region ({}x{}) saved to: {}", crop_w, crop_h, path);
+            match crate::platform::clipboard::save_and_copy_pixmap(
+                &temp_pixmap,
+                Some((min_x, min_y, crop_w, crop_h)),
+            ) {
+                Ok((path, copied)) => {
+                    if copied {
+                        println!(
+                            "Cropped Region ({}x{}) saved and copied to clipboard: {}",
+                            crop_w, crop_h, path
+                        );
+                    } else {
+                        println!(
+                            "Cropped Region ({}x{}) saved to: {} (clipboard copy failed)",
+                            crop_w, crop_h, path
+                        );
+                    }
                 }
                 Err(e) => {
                     println!("Failed to save crop region: {}", e);
@@ -367,7 +392,10 @@ impl X11Backend {
             }
         });
 
-        self.toast_notification = Some(crate::core::canvas::ToastNotification::new(format!("Saved Crop ({}x{})", crop_w, crop_h), 3000));
+        self.toast_notification = Some(crate::core::canvas::ToastNotification::new(
+            format!("Saved Crop + copied ({}x{})", crop_w, crop_h),
+            3000,
+        ));
     }
 
     fn set_hidden(
@@ -467,7 +495,7 @@ fn get_dirty_rect(
     screen_width: u16,
     screen_height: u16,
     prev_spotlight: Option<Point>,
-    prev_shape: Option<Point>,
+    prev_shape_bounds: Option<(f32, f32, f32, f32)>,
 ) -> Option<Rectangle> {
     if let Some(stroke) = canvas.current_stroke() {
         if stroke.stroke_type == StrokeType::Spotlight {
@@ -513,11 +541,11 @@ fn get_dirty_rect(
                 let mut min_y = f32::min(p1.y, p2.y);
                 let mut max_y = f32::max(p1.y, p2.y);
 
-                if let Some(prev) = prev_shape {
-                    min_x = f32::min(min_x, prev.x);
-                    max_x = f32::max(max_x, prev.x);
-                    min_y = f32::min(min_y, prev.y);
-                    max_y = f32::max(max_y, prev.y);
+                if let Some((ox1, oy1, ox2, oy2)) = prev_shape_bounds {
+                    min_x = min_x.min(ox1).min(ox2);
+                    max_x = max_x.max(ox1).max(ox2);
+                    min_y = min_y.min(oy1).min(oy2);
+                    max_y = max_y.max(oy1).max(oy2);
                 }
 
                 let pad = stroke.width * 4.0 + 35.0;
@@ -1282,7 +1310,7 @@ impl PlatformBackend for X11Backend {
                             let dirty_rect = get_dirty_rect(canvas, self.width, self.height, old_pt, None);
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                         } else if is_shape {
-                            let old_shape_pt = self.prev_shape_point;
+                            let old_bounds = self.prev_shape_bounds;
                             let new_shape_pt = Point::new(last_x, last_y, 1.0, now_ms);
 
                             if let Some(stroke) = canvas.current_stroke_mut() {
@@ -1291,10 +1319,17 @@ impl PlatformBackend for X11Backend {
                                 } else {
                                     stroke.add_point(new_shape_pt);
                                 }
+                                let p1 = stroke.points[0];
+                                let p2 = *stroke.points.last().unwrap();
+                                self.prev_shape_bounds = Some((
+                                    p1.x.min(p2.x),
+                                    p1.y.min(p2.y),
+                                    p1.x.max(p2.x),
+                                    p1.y.max(p2.y),
+                                ));
                             }
-                            self.prev_shape_point = Some(new_shape_pt);
 
-                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, old_shape_pt);
+                            let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, old_bounds);
                             self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, dirty_rect)?;
                         } else {
                             canvas.add_point_to_current_stroke(Point::new(last_x, last_y, 1.0, now_ms));
@@ -1315,7 +1350,7 @@ impl PlatformBackend for X11Backend {
                                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
                             }
                             if canvas.current_stroke().is_some() {
-                                self.prev_shape_point = None;
+                                self.prev_shape_bounds = None;
                                 if !matches!(self.active_tool, Tool::Text { .. }) && !matches!(self.active_tool, Tool::Spotlight { .. }) {
                                     canvas.finish_current_stroke();
                                     self.completed_strokes_dirty = true;
@@ -1513,7 +1548,7 @@ impl X11Backend {
                 height: toolbar.height as u16,
             }];
             if self.show_settings_menu {
-                let menu_x = toolbar.x + 520.0 * toolbar.scale_factor;
+                let menu_x = toolbar.x + toolbar.settings_btn_logical_x() * toolbar.scale_factor;
                 let menu_y = toolbar.y + toolbar.height + 8.0 * toolbar.scale_factor;
                 let menu_w = 250.0 * toolbar.scale_factor;
                 let menu_h = 135.0 * toolbar.scale_factor;
