@@ -27,7 +27,7 @@ chmod +x "${APPDIR}/usr/bin/vectrace"
 echo "=== Generating AppImage ==="
 if ! command -v appimagetool &> /dev/null; then
     echo "Downloading appimagetool..."
-    wget -q "https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
+    wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O /tmp/appimagetool || curl -sL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -o /tmp/appimagetool
     chmod +x /tmp/appimagetool
     APPIMAGETOOL="/tmp/appimagetool"
 else
