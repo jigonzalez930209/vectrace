@@ -338,7 +338,8 @@ impl X11Backend {
         const XK_RETURN: u32 = 0xff0d;
         const XK_KP_ENTER: u32 = 0xff8d;
         const XK_U: u32 = 0x0075;
-        const XK_R: u32 = 0x0072;
+        const XK_R_LOWER: u32 = 0x0072;
+        const XK_R_UPPER: u32 = 0x0052;
         const XK_C_LOWER: u32 = 0x0063;
         const XK_C_UPPER: u32 = 0x0043;
         const XK_B: u32 = 0x0062;
@@ -369,11 +370,17 @@ impl X11Backend {
         let is_ctrl = (state & u16::from(ModMask::CONTROL)) != 0;
         let is_alt  = (state & u16::from(ModMask::M1)) != 0;
 
-        // Global hotkey: Ctrl+Alt+A
+        // Global hotkey: Ctrl+Alt+A (works even while click-through so the app below can keep typing)
         if keycode_a > 0 && keycode == keycode_a && is_ctrl && is_alt {
             self.passthrough = !self.passthrough;
             self.apply_passthrough(conn, win_id, root, toolbar)?;
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            return Ok(false);
+        }
+
+        // In click-through mode the keyboard is released to the app underneath —
+        // ignore local tool shortcuts so they never steal typing from that app.
+        if self.passthrough {
             return Ok(false);
         }
 
@@ -429,49 +436,73 @@ impl X11Backend {
                     let mut tool = Tool::default_pen();
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
                     self.active_tool = tool;
+                    println!("Tool: Pencil");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_H_LOWER | XK_H_UPPER => {
                     let mut tool = Tool::default_highlighter();
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
                     self.active_tool = tool;
+                    println!("Tool: Highlighter");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_L_LOWER | XK_L_UPPER => {
                     let mut tool = Tool::default_shape(crate::core::ShapeKind::Line);
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
                     self.active_tool = tool;
+                    println!("Tool: Line");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_A_LOWER | XK_A_UPPER => {
                     let mut tool = Tool::default_shape(crate::core::ShapeKind::Arrow);
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
                     self.active_tool = tool;
+                    println!("Tool: Arrow");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_E_LOWER | XK_E_UPPER => {
                     self.active_tool = Tool::default_eraser();
+                    println!("Tool: Eraser");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_T_LOWER | XK_T_UPPER => {
                     let mut tool = Tool::default_text();
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
                     self.active_tool = tool;
+                    println!("Tool: Text");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_K_LOWER | XK_K_UPPER => {
                     self.active_tool = Tool::default_laser();
+                    println!("Tool: Laser");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_O_LOWER | XK_O_UPPER => {
                     let mut tool = Tool::default_shape(crate::core::ShapeKind::Oval);
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
                     self.active_tool = tool;
+                    println!("Tool: Oval");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_N_LOWER | XK_N_UPPER => {
                     self.active_tool = Tool::default_spotlight();
+                    println!("Tool: Spotlight");
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_R_LOWER | XK_R_UPPER => {
+                    if is_ctrl {
+                        if canvas.redo() {
+                            self.completed_strokes_dirty = true;
+                            println!("Redo");
+                            self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                        }
+                    } else {
+                        let mut tool = Tool::default_shape(crate::core::ShapeKind::Rectangle);
+                        if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                        self.active_tool = tool;
+                        println!("Tool: Rectangle");
+                        self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                    }
                 }
                 XK_M_LOWER | XK_M_UPPER => {
                     self.set_hidden(conn, win_id, root, gc_id, canvas, toolbar, true)?;
@@ -502,12 +533,6 @@ impl X11Backend {
                 }
                 XK_U => {
                     if canvas.undo() {
-                        self.completed_strokes_dirty = true;
-                        self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
-                    }
-                }
-                XK_R => {
-                    if canvas.redo() {
                         self.completed_strokes_dirty = true;
                         self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                     }

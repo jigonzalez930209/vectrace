@@ -35,6 +35,8 @@ pub fn find_32bit_visual(screen: &x11rb::protocol::xproto::Screen) -> Option<(x1
 }
 
 pub fn grab_global_hotkeys(conn: &impl Connection, root: u32, keycode_a: u8) {
+    // Always-on daemon shortcut. owner_events=true so it still works alongside
+    // the overlay key grabs (and while click-through is enabled).
     let modifiers = [
         u16::from(ModMask::CONTROL) | u16::from(ModMask::M1),
         u16::from(ModMask::CONTROL) | u16::from(ModMask::M1) | u16::from(ModMask::LOCK),
@@ -54,8 +56,88 @@ pub fn grab_global_hotkeys(conn: &impl Connection, root: u32, keycode_a: u8) {
     }
 }
 
+/// Keycodes that should be stolen from the focused app while the overlay is active.
+///
+/// On GNOME Wayland the overlay runs as an XWayland `override_redirect` window, so
+/// `XSetInputFocus` / `XGrabKeyboard` are unreliable. Root `XGrabKey` (same path as
+/// Ctrl+Alt+A) is what actually delivers tool shortcuts.
+pub fn collect_overlay_keycodes(
+    min_keycode: u8,
+    max_keycode: u8,
+    keysyms: &[u32],
+    keysyms_per_keycode: usize,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    for keycode in min_keycode..=max_keycode {
+        let base = ((keycode - min_keycode) as usize) * keysyms_per_keycode;
+        let keysym = keysyms.get(base).copied().unwrap_or(0);
+        if keysym == 0 || is_modifier_keysym(keysym) {
+            continue;
+        }
+        out.push(keycode);
+    }
+    out
+}
+
+fn is_modifier_keysym(keysym: u32) -> bool {
+    matches!(
+        keysym,
+        // Shift, Caps, Ctrl, Alt/Meta, NumLock, Super/Hyper, Mode_switch, ISO_Level3_Shift…
+        0xffe1..=0xffee
+            | 0xff7e
+            | 0xfe03
+            | 0xfe08
+            | 0xfe11
+            | 0xfe12
+            | 0xfe13
+    )
+}
+
+/// Steal overlay shortcuts/text keys via root grabs (works under XWayland/GNOME).
+pub fn grab_overlay_keys(conn: &impl Connection, root: u32, keycodes: &[u8]) {
+    // Explicit Lock/NumLock variants (more reliable than ONLY AnyModifier on some XWayland hosts).
+    let modifiers = [
+        0u16,
+        u16::from(ModMask::LOCK),
+        u16::from(ModMask::M2),
+        u16::from(ModMask::LOCK) | u16::from(ModMask::M2),
+        u16::from(ModMask::ANY),
+    ];
+    for &keycode in keycodes {
+        for &mod_mask in &modifiers {
+            let _ = conn.grab_key(
+                false,
+                root,
+                mod_mask.into(),
+                keycode,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            );
+        }
+    }
+    let _ = conn.flush();
+}
+
+/// Release overlay key grabs so typing goes back to the app underneath.
+pub fn ungrab_overlay_keys(conn: &impl Connection, root: u32, keycodes: &[u8]) {
+    let modifiers = [
+        0u16,
+        u16::from(ModMask::LOCK),
+        u16::from(ModMask::M2),
+        u16::from(ModMask::LOCK) | u16::from(ModMask::M2),
+        u16::from(ModMask::ANY),
+    ];
+    for &keycode in keycodes {
+        for &mod_mask in &modifiers {
+            let _ = conn.ungrab_key(keycode, root, mod_mask.into());
+        }
+    }
+    let _ = conn.flush();
+}
+
 pub fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
-    let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, win_id, Time::CURRENT_TIME);
+    // RevertToParent is the usual choice for override-redirect overlays.
+    let _ = conn.set_input_focus(InputFocus::PARENT, win_id, Time::CURRENT_TIME);
 
     if let Ok(net_active_win) = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW") {
         if let Ok(reply) = net_active_win.reply() {

@@ -39,6 +39,8 @@ pub struct X11Backend {
     pub crop_drag_state: CropDragState,
     pub hover_tooltip: Option<String>,
     pub mouse_pos: (f32, f32),
+    /// Keycodes grabbed on the root window while the overlay is active (XWayland-safe).
+    pub overlay_keycodes: Vec<u8>,
 }
 
 impl X11Backend {
@@ -71,6 +73,7 @@ impl X11Backend {
             crop_drag_state: CropDragState::None,
             hover_tooltip: None,
             mouse_pos: (0.0, 0.0),
+            overlay_keycodes: Vec::new(),
         }
     }
 
@@ -221,6 +224,7 @@ impl X11Backend {
         if hidden {
             println!("Hiding Vectrace overlay window to System Tray...");
             self.passthrough = true;
+            crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
             let _ = conn.unmap_window(win_id);
@@ -247,6 +251,7 @@ impl X11Backend {
         toolbar: &Toolbar,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_hidden {
+            crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
             let offscreen_rect = [Rectangle { x: -32000, y: -32000, width: 1, height: 1 }];
@@ -256,6 +261,8 @@ impl X11Backend {
         }
 
         if self.passthrough {
+            // Release overlay key grabs so keystrokes go to the app underneath.
+            crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
             let mut rects = vec![Rectangle {
@@ -276,7 +283,9 @@ impl X11Backend {
             }
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &rects)?;
         } else {
+            // Root XGrabKey is reliable on XWayland/GNOME; window focus/grab is not.
             crate::platform::x11::window::focus_x11_window(conn, root, win_id);
+            crate::platform::x11::window::grab_overlay_keys(conn, root, &self.overlay_keycodes);
             let rect = Rectangle { x: 0, y: 0, width: self.width, height: self.height };
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &[rect])?;
         }

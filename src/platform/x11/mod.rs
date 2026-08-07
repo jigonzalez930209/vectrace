@@ -180,12 +180,23 @@ impl PlatformBackend for X11Backend {
             if ks == 0x0061 || ks == 0x0041 { keycode_a = kc; break; }
         }
 
+        self.overlay_keycodes = window::collect_overlay_keycodes(
+            min_keycode,
+            max_keycode,
+            &keyboard_mapping.keysyms,
+            keysyms_per_keycode,
+        );
+
         if keycode_a > 0 {
             window::grab_global_hotkeys(&conn, screen.root, keycode_a);
             println!("Registered Global Daemon Shortcut: [Ctrl+Alt+A]");
         }
+        println!(
+            "Registered {} overlay key grabs (XWayland-safe tool shortcuts)",
+            self.overlay_keycodes.len()
+        );
 
-        println!("Controls:\n  [Ctrl+Alt+A] Global Toggle Active/Passthrough\n  [Space]      Toggle Click-Through\n  [U]          Undo\n  [R]          Redo\n  [C]          Clear canvas\n  [B]          Toggle Background\n  [ESC]        Exit\n");
+        println!("Controls:\n  [Ctrl+Alt+A] Global Toggle Active/Passthrough\n  [Space]      Toggle Click-Through\n  [P/H/L/A/R/O/K/N/E/T] Tools\n  [U]          Undo\n  [Ctrl+R]     Redo\n  [C]          Clear canvas\n  [B]          Toggle Background\n  [ESC]        Exit\n");
 
         self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
         self.completed_strokes_dirty = true;
