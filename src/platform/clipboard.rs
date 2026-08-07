@@ -37,8 +37,8 @@ pub fn save_and_copy_pixmap(
     pixmap: &tiny_skia::Pixmap,
     crop_rect: Option<(u32, u32, u32, u32)>,
 ) -> Result<(String, bool), String> {
-    let export = crate::core::canvas::prepare_export_pixmap(pixmap, crop_rect)?;
-    let path = crate::core::canvas::save_export_pixmap(&export, crop_rect.is_some())?;
+    let export = crate::core::export::prepare_export_pixmap(pixmap, crop_rect)?;
+    let path = crate::core::export::save_export_pixmap(&export, crop_rect.is_some())?;
     let copied = match copy_pixmap_to_clipboard(&export) {
         Ok(()) => true,
         Err(e) => {
