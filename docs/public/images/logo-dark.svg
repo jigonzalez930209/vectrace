@@ -1,28 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vectrace">
   <defs>
-    <!-- Clear glass panel (docs / Velo Plot family) -->
+    <!-- Dark glass panel (docs dark theme) -->
     <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f7fbff"/>
-      <stop offset="55%" stop-color="#e8f4fb"/>
-      <stop offset="100%" stop-color="#d6ecfa"/>
+      <stop offset="0%" stop-color="#152033"/>
+      <stop offset="55%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0b1220"/>
     </linearGradient>
 
     <linearGradient id="panel-edge" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.55"/>
-      <stop offset="100%" stop-color="#4facfe" stop-opacity="0.35"/>
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#4facfe" stop-opacity="0.45"/>
     </linearGradient>
 
-    <!-- Neon laser (matches vectrace-bg / Velo Plot cyan) -->
+    <!-- Neon laser (brighter on dark) -->
     <linearGradient id="laser" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#00f2fe"/>
-      <stop offset="50%" stop-color="#4facfe"/>
-      <stop offset="100%" stop-color="#0077b6"/>
+      <stop offset="50%" stop-color="#67e8f9"/>
+      <stop offset="100%" stop-color="#4facfe"/>
     </linearGradient>
 
     <!-- Soft highlighter ribbon -->
     <linearGradient id="ribbon" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#ff6b6b" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#ffb199" stop-opacity="0.12"/>
+      <stop offset="0%" stop-color="#ff6b6b" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffb199" stop-opacity="0.18"/>
     </linearGradient>
 
     <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
@@ -43,13 +43,13 @@
         fill="url(#panel)" stroke="url(#panel-edge)" stroke-width="6"/>
 
   <!-- Soft grid (screen overlay cue) -->
-  <g opacity="0.22" stroke="#4facfe" stroke-width="1.5" fill="none">
+  <g opacity="0.28" stroke="#67e8f9" stroke-width="1.5" fill="none">
     <path d="M132 56 V456 M256 56 V456 M380 56 V456"/>
     <path d="M56 132 H456 M56 256 H456 M56 380 H456"/>
   </g>
 
   <!-- Overlay corner brackets -->
-  <g stroke="#0891b2" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.35">
+  <g stroke="#67e8f9" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.4">
     <path d="M88 88 H148 M88 88 V148"/>
     <path d="M424 88 H364 M424 88 V148"/>
     <path d="M88 424 H148 M88 424 V364"/>
@@ -68,16 +68,16 @@
 
   <!-- Core highlight -->
   <path d="M100 348 C188 326 218 168 318 156 C376 148 398 228 416 204"
-        fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" opacity="0.95"/>
+        fill="none" stroke="#e8f4ff" stroke-width="6" stroke-linecap="round" opacity="0.9"/>
 
   <!-- Control nodes -->
-  <circle cx="100" cy="348" r="11" fill="#00f2fe" stroke="#ffffff" stroke-width="4" filter="url(#glow)"/>
-  <circle cx="318" cy="156" r="11" fill="#4facfe" stroke="#ffffff" stroke-width="4" filter="url(#glow)"/>
-  <circle cx="416" cy="204" r="13" fill="#ff6b6b" stroke="#ffffff" stroke-width="4" filter="url(#glow)"/>
+  <circle cx="100" cy="348" r="11" fill="#00f2fe" stroke="#0b1220" stroke-width="4" filter="url(#glow)"/>
+  <circle cx="318" cy="156" r="11" fill="#4facfe" stroke="#0b1220" stroke-width="4" filter="url(#glow)"/>
+  <circle cx="416" cy="204" r="13" fill="#ff6b6b" stroke="#0b1220" stroke-width="4" filter="url(#glow)"/>
 
   <!-- Stylus tip -->
   <g transform="translate(416 204) rotate(-42)">
-    <path d="M0 0 L-14 -34 L34 -14 Z" fill="#0f2744"/>
-    <path d="M0 0 L-8 -20 L20 -8 Z" fill="#ffffff"/>
+    <path d="M0 0 L-14 -34 L34 -14 Z" fill="#e8f4ff"/>
+    <path d="M0 0 L-8 -20 L20 -8 Z" fill="#0b1220"/>
   </g>
 </svg>

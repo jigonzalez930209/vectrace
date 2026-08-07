@@ -1,84 +1,83 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vectrace">
   <defs>
-    <!-- Background Gradient -->
-    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e1e24" />
-      <stop offset="100%" stop-color="#0f0f12" />
+    <!-- Clear glass panel (docs / Velo Plot family) -->
+    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7fbff"/>
+      <stop offset="55%" stop-color="#e8f4fb"/>
+      <stop offset="100%" stop-color="#d6ecfa"/>
     </linearGradient>
 
-    <!-- Neon Path Gradient -->
-    <linearGradient id="laser-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#00f2fe" />
-      <stop offset="50%" stop-color="#4facfe" />
-      <stop offset="100%" stop-color="#0000fe" />
+    <linearGradient id="panel-edge" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#4facfe" stop-opacity="0.35"/>
     </linearGradient>
 
-    <!-- Highlighter Trail Gradient -->
-    <linearGradient id="trail-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ff0844" stop-opacity="0.8" />
-      <stop offset="100%" stop-color="#ffb199" stop-opacity="0.2" />
+    <!-- Neon laser (matches vectrace-bg / Velo Plot cyan) -->
+    <linearGradient id="laser" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe"/>
+      <stop offset="50%" stop-color="#4facfe"/>
+      <stop offset="100%" stop-color="#0077b6"/>
     </linearGradient>
 
-    <!-- Glow Filter -->
-    <filter id="neon-glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="12" result="blur1" />
-      <feGaussianBlur stdDeviation="24" result="blur2" />
+    <!-- Soft highlighter ribbon -->
+    <linearGradient id="ribbon" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff6b6b" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#ffb199" stop-opacity="0.12"/>
+    </linearGradient>
+
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="b"/>
       <feMerge>
-        <feMergeNode in="blur2" />
-        <feMergeNode in="blur1" />
-        <feMergeNode in="SourceGraphic" />
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
       </feMerge>
     </filter>
 
-    <!-- Glassmorphic Border Gradient -->
-    <linearGradient id="border-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.25" />
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.05" />
-    </linearGradient>
+    <filter id="soft">
+      <feGaussianBlur stdDeviation="1.2"/>
+    </filter>
   </defs>
 
-  <!-- Base Icon Frame -->
-  <rect x="32" y="32" width="448" height="448" rx="96" fill="url(#bg-grad)" stroke="url(#border-grad)" stroke-width="4" />
+  <!-- App tile -->
+  <rect x="36" y="36" width="440" height="440" rx="88"
+        fill="url(#panel)" stroke="url(#panel-edge)" stroke-width="6"/>
 
-  <!-- Background Grid Subtle Lines -->
-  <g opacity="0.08" stroke="#ffffff" stroke-width="2">
-    <line x1="128" y1="32" x2="128" y2="480" />
-    <line x1="256" y1="32" x2="256" y2="480" />
-    <line x1="384" y1="32" x2="384" y2="480" />
-    <line x1="32" y1="128" x2="480" y2="128" />
-    <line x1="32" y1="256" x2="480" y2="256" />
-    <line x1="32" y1="384" x2="480" y2="384" />
+  <!-- Soft grid (screen overlay cue) -->
+  <g opacity="0.22" stroke="#4facfe" stroke-width="1.5" fill="none">
+    <path d="M132 56 V456 M256 56 V456 M380 56 V456"/>
+    <path d="M56 132 H456 M56 256 H456 M56 380 H456"/>
   </g>
 
-  <!-- Wide Smooth Ribbon (Highlighter effect) -->
-  <path d="M 100 360 C 180 340, 220 180, 320 160 C 370 150, 400 210, 420 220" 
-        fill="none" 
-        stroke="url(#trail-grad)" 
-        stroke-width="36" 
-        stroke-linecap="round" />
+  <!-- Overlay corner brackets -->
+  <g stroke="#0891b2" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.35">
+    <path d="M88 88 H148 M88 88 V148"/>
+    <path d="M424 88 H364 M424 88 V148"/>
+    <path d="M88 424 H148 M88 424 V364"/>
+    <path d="M424 424 H364 M424 424 V364"/>
+  </g>
 
-  <!-- Neon Glowing Vector Spline -->
-  <path d="M 90 350 C 180 330, 210 160, 320 150 C 380 145, 400 230, 420 200" 
-        fill="none" 
-        stroke="url(#laser-grad)" 
-        stroke-width="16" 
-        stroke-linecap="round" 
-        filter="url(#neon-glow)" />
+  <!-- Highlighter ribbon under the laser -->
+  <path d="M108 356 C188 334 228 188 318 168 C368 156 398 214 418 224"
+        fill="none" stroke="url(#ribbon)" stroke-width="34" stroke-linecap="round"
+        filter="url(#soft)"/>
 
-  <!-- Core White Laser Line -->
-  <path d="M 90 350 C 180 330, 210 160, 320 150 C 380 145, 400 230, 420 200" 
-        fill="none" 
-        stroke="#ffffff" 
-        stroke-width="6" 
-        stroke-linecap="round" />
+  <!-- Neon vector spline -->
+  <path d="M100 348 C188 326 218 168 318 156 C376 148 398 228 416 204"
+        fill="none" stroke="url(#laser)" stroke-width="18" stroke-linecap="round"
+        filter="url(#glow)"/>
 
-  <!-- Vector Control Nodes -->
-  <circle cx="90" cy="350" r="10" fill="#00f2fe" stroke="#ffffff" stroke-width="4" filter="url(#neon-glow)" />
-  <circle cx="320" cy="150" r="10" fill="#4facfe" stroke="#ffffff" stroke-width="4" filter="url(#neon-glow)" />
-  <circle cx="420" cy="200" r="12" fill="#ff0844" stroke="#ffffff" stroke-width="4" filter="url(#neon-glow)" />
+  <!-- Core highlight -->
+  <path d="M100 348 C188 326 218 168 318 156 C376 148 398 228 416 204"
+        fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" opacity="0.95"/>
 
-  <!-- Cursor / Stylus Tip Overlay -->
-  <g transform="translate(420, 200) rotate(-45)">
-    <polygon points="0,0 -16,-36 36,-16" fill="#ffffff" filter="url(#neon-glow)" />
+  <!-- Control nodes -->
+  <circle cx="100" cy="348" r="11" fill="#00f2fe" stroke="#ffffff" stroke-width="4" filter="url(#glow)"/>
+  <circle cx="318" cy="156" r="11" fill="#4facfe" stroke="#ffffff" stroke-width="4" filter="url(#glow)"/>
+  <circle cx="416" cy="204" r="13" fill="#ff6b6b" stroke="#ffffff" stroke-width="4" filter="url(#glow)"/>
+
+  <!-- Stylus tip -->
+  <g transform="translate(416 204) rotate(-42)">
+    <path d="M0 0 L-14 -34 L34 -14 Z" fill="#0f2744"/>
+    <path d="M0 0 L-8 -20 L20 -8 Z" fill="#ffffff"/>
   </g>
 </svg>

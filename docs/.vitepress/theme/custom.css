@@ -1,0 +1,208 @@
+/**
+ * Vectrace docs theme — light, clear, cyan accents (logo / Velo Plot family).
+ * Animated SVG backdrop inspired by sci-notebook notebook-bg structure.
+ */
+
+:root {
+  --vp-c-brand-1: #0891b2;
+  --vp-c-brand-2: #06b6d4;
+  --vp-c-brand-3: #22d3ee;
+  --vp-c-brand-soft: rgba(8, 145, 178, 0.12);
+
+  --vp-c-bg: #f7fbff;
+  --vp-c-bg-alt: #eef6fc;
+  --vp-c-bg-soft: #e8f4fb;
+  --vp-c-bg-elv: #ffffff;
+
+  --vp-c-text-1: #0f2744;
+  --vp-c-text-2: #334e68;
+  --vp-c-text-3: #627d98;
+
+  --vp-c-divider: rgba(79, 172, 254, 0.22);
+  --vp-c-gutter: rgba(79, 172, 254, 0.12);
+
+  --vp-button-brand-bg: #0891b2;
+  --vp-button-brand-hover-bg: #0e7490;
+  --vp-button-brand-active-bg: #155e75;
+  --vp-button-brand-text: #ffffff;
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #00b4d8 0%, #0077b6 45%, #023e8a 100%);
+  --vp-home-hero-image-background-image: linear-gradient(135deg, rgba(0, 242, 254, 0.35) 0%, rgba(79, 172, 254, 0.2) 100%);
+  --vp-home-hero-image-filter: blur(44px);
+
+  --vp-c-tip-1: #0891b2;
+  --vp-c-tip-soft: rgba(8, 145, 178, 0.1);
+}
+
+.dark {
+  --vp-c-brand-1: #22d3ee;
+  --vp-c-brand-2: #67e8f9;
+  --vp-c-brand-3: #a5f3fc;
+  --vp-c-brand-soft: rgba(34, 211, 238, 0.14);
+
+  --vp-c-bg: #0b1220;
+  --vp-c-bg-alt: #111827;
+  --vp-c-bg-soft: #152033;
+  --vp-c-bg-elv: #162033;
+
+  --vp-c-text-1: #e8f4ff;
+  --vp-c-text-2: #b6cce0;
+  --vp-c-text-3: #7f9bb5;
+
+  --vp-home-hero-name-background: linear-gradient(120deg, #00f2fe 0%, #4facfe 50%, #a5f3fc 100%);
+}
+
+/* Full-bleed animated backdrop (dedicated light + dark SVGs) */
+/* Content stacking handled with body::before/::after + section z-index below */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: var(--vp-c-bg);
+  background-image: var(--vectrace-bg-light, url("./vectrace-bg.svg"));
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0.88;
+  filter: blur(6px) saturate(1);
+  transform: scale(1.02);
+  transform-origin: center;
+  transition: opacity 0.25s ease, filter 0.25s ease;
+}
+
+html.dark body::before {
+  background-color: #0b1220;
+  background-image: var(--vectrace-bg-dark, url("./vectrace-bg-dark.svg"));
+  opacity: 0.7;
+  filter: blur(8px) saturate(1) brightness(1.05);
+  transform: scale(1.03);
+}
+
+/* Soft veil — keeps text readable without killing the backdrop */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(247, 251, 255, 0.28) 0%,
+    rgba(247, 251, 255, 0.42) 45%,
+    rgba(247, 251, 255, 0.55) 100%
+  );
+}
+
+html.dark body::after {
+  background: linear-gradient(
+    180deg,
+    rgba(11, 18, 32, 0.28) 0%,
+    rgba(11, 18, 32, 0.4) 40%,
+    rgba(11, 18, 32, 0.52) 100%
+  );
+}
+
+/* Content surfaces stay crisp above the blurred backdrop */
+.VPContent,
+.VPHome,
+.VPDoc,
+.VPNav,
+.VPSidebar,
+.VPLocalNav,
+.VPFooter {
+  position: relative;
+  z-index: 0;
+}
+
+/* Glass-ish surfaces so content stays clear over the SVG */
+.VPNavBar,
+.VPSidebar,
+.VPLocalNav {
+  backdrop-filter: blur(10px);
+}
+
+.VPNavBar {
+  background-color: rgba(247, 251, 255, 0.78) !important;
+}
+
+html.dark .VPNavBar {
+  background-color: rgba(11, 18, 32, 0.82) !important;
+}
+
+.VPFeature {
+  background: rgba(255, 255, 255, 0.72) !important;
+  border-color: rgba(79, 172, 254, 0.28) !important;
+  backdrop-filter: blur(8px);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.VPFeature:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(8, 145, 178, 0.12);
+}
+
+html.dark .VPFeature {
+  background: rgba(22, 32, 51, 0.72) !important;
+  border-color: rgba(103, 232, 249, 0.22) !important;
+}
+
+html.dark .VPFeature:hover {
+  box-shadow: 0 12px 28px rgba(0, 242, 254, 0.12);
+}
+
+.vp-doc img {
+  border-radius: 12px;
+  border: 1px solid rgba(79, 172, 254, 0.25);
+  box-shadow: 0 10px 30px rgba(15, 39, 68, 0.08);
+}
+
+html.dark .vp-doc img {
+  border-color: rgba(103, 232, 249, 0.2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.VPHero .name {
+  letter-spacing: -0.02em;
+}
+
+.VPButton.brand {
+  box-shadow: 0 8px 20px rgba(8, 145, 178, 0.25);
+}
+
+html.dark .VPButton.brand {
+  box-shadow: 0 8px 22px rgba(34, 211, 238, 0.22);
+}
+
+.VPNavBarTitle .logo {
+  height: 28px;
+  width: 28px;
+  border-radius: 7px;
+  box-shadow: 0 2px 10px rgba(8, 145, 178, 0.18);
+}
+
+html.dark .VPNavBarTitle .logo {
+  box-shadow: 0 2px 12px rgba(0, 242, 254, 0.2);
+}
+
+.VPHero .image-src {
+  border-radius: 28px;
+  box-shadow: 0 18px 48px rgba(8, 145, 178, 0.22);
+}
+
+html.dark .VPHero .image-src {
+  box-shadow: 0 18px 48px rgba(0, 242, 254, 0.18);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    background-image: none !important;
+    filter: none !important;
+    opacity: 0 !important;
+  }
+  body::after {
+    opacity: 0.92;
+  }
+}

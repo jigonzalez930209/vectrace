@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none">
+  <defs>
+    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.55"/>
+      <stop offset="55%" stop-color="#4facfe" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.3"/>
+    </linearGradient>
+
+    <linearGradient id="flowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#00f2fe" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#4facfe" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="laserGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#67e8f9"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+
+    <radialGradient id="vignette" cx="50%" cy="40%" r="75%">
+      <stop offset="0%" stop-color="#152033" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#060a12" stop-opacity="0.55"/>
+    </radialGradient>
+
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <filter id="softBlur">
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+
+    <pattern id="softGrid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0 H0 V64" fill="none" stroke="#67e8f9" stroke-width="0.7" opacity="0.14"/>
+    </pattern>
+
+    <style>
+      @keyframes flow {
+        0% { stroke-dashoffset: 1400; opacity: 0; }
+        12% { opacity: 1; }
+        88% { opacity: 1; }
+        100% { stroke-dashoffset: 0; opacity: 0; }
+      }
+      @keyframes float {
+        0%, 100% { transform: translateY(0); opacity: 0.22; }
+        50% { transform: translateY(-22px); opacity: 0.5; }
+      }
+      @keyframes floatReverse {
+        0%, 100% { transform: translateY(0); opacity: 0.18; }
+        50% { transform: translateY(18px); opacity: 0.42; }
+      }
+      @keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 0.35; }
+        50% { transform: scale(1.2); opacity: 0.75; }
+      }
+      @keyframes drawStroke {
+        0% { stroke-dashoffset: 420; opacity: 0; }
+        15% { opacity: 0.95; }
+        85% { opacity: 0.95; }
+        100% { stroke-dashoffset: 0; opacity: 0; }
+      }
+      .flow-line {
+        stroke-dasharray: 120 1280;
+        animation: flow 14s linear infinite;
+      }
+      .pen-stroke {
+        stroke-dasharray: 80 340;
+        animation: drawStroke 10s ease-in-out infinite;
+      }
+      .float-1 { animation: float 11s ease-in-out infinite; }
+      .float-2 { animation: floatReverse 13s ease-in-out infinite; }
+      .float-3 { animation: float 16s ease-in-out infinite; }
+      .pulse-node {
+        transform-origin: center;
+        transform-box: fill-box;
+        animation: pulse 7s ease-in-out infinite;
+      }
+    </style>
+  </defs>
+
+  <!-- Dark base -->
+  <rect width="100%" height="100%" fill="#0b1220"/>
+  <rect width="100%" height="100%" fill="url(#softGrid)" opacity="0.75"/>
+  <rect width="100%" height="100%" fill="url(#vignette)"/>
+
+  <!-- Neon ambient orbs -->
+  <circle cx="180" cy="160" r="300" fill="url(#brandGrad)" opacity="0.24" filter="url(#glow)"/>
+  <circle cx="1220" cy="720" r="360" fill="url(#brandGrad)" opacity="0.2" filter="url(#glow)"/>
+  <circle cx="980" cy="180" r="180" fill="#00f2fe" opacity="0.1" filter="url(#glow)"/>
+
+  <!-- Flowing laser trails -->
+  <g stroke="url(#flowGrad)" stroke-width="2.4" fill="none" filter="url(#glow)" opacity="0.85">
+    <path d="M-80,220 Q380,120 720,420 T1520,280" class="flow-line"/>
+    <path d="M-60,640 Q520,780 980,380 T1520,680" class="flow-line" style="animation-delay:-4.5s;stroke-width:3"/>
+    <path d="M260,-40 Q560,380 280,940" class="flow-line" style="animation-delay:-8s;opacity:0.7"/>
+  </g>
+
+  <!-- Annotation motifs -->
+  <g fill="none" stroke="url(#laserGrad)" stroke-width="3" stroke-linecap="round" filter="url(#softBlur)" opacity="0.45">
+    <path class="pen-stroke float-1" d="M160 520 C240 480, 300 560, 380 500 S520 470, 600 510"/>
+    <path class="pen-stroke float-2" d="M980 560 L1180 420 M1180 420 L1135 430 M1180 420 L1170 465" style="animation-delay:-3s"/>
+    <rect class="float-3" x="1040" y="140" width="220" height="140" rx="4" stroke-dasharray="10 8" opacity="0.55"/>
+    <circle class="pulse-node" cx="420" cy="240" r="54" style="animation-delay:-1.5s"/>
+  </g>
+
+  <g fill="#67e8f9" filter="url(#glow)" opacity="0.85">
+    <circle class="pulse-node" cx="380" cy="140" r="7"/>
+    <circle class="pulse-node" cx="720" cy="420" r="10" style="animation-duration:5.5s"/>
+    <circle class="pulse-node" cx="1080" cy="660" r="8" style="animation-delay:-2.5s"/>
+  </g>
+
+  <g stroke="#67e8f9" stroke-width="3.5" fill="none" opacity="0.22" filter="url(#glow)">
+    <path d="M70 70 H150 M70 70 V150"/>
+    <path d="M1370 70 H1290 M1370 70 V150"/>
+    <path d="M70 830 H150 M70 830 V750"/>
+    <path d="M1370 830 H1290 M1370 830 V750"/>
+  </g>
+</svg>

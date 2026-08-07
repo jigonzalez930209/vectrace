@@ -8,7 +8,11 @@ export default defineConfig({
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/vectrace/images/logo.svg' }]
   ],
   themeConfig: {
-    logo: '/images/logo.svg',
+    logo: {
+      light: '/images/logo.svg',
+      dark: '/images/logo-dark.svg',
+      alt: 'Vectrace'
+    },
     nav: [
       { text: 'Home', link: '/' },
       { text: 'Installation Guide', link: '/guide/installation' },

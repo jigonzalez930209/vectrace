@@ -6,7 +6,8 @@ hero:
   text: "Ultra-Fast Vector Screen Marker & Overlay"
   tagline: "High-performance annotation, laser spotlight & region cropping for Linux X11 and Wayland."
   image:
-    src: /images/logo.svg
+    light: /images/logo.svg
+    dark: /images/logo-dark.svg
     alt: Vectrace Logo
   actions:
     - theme: brand
@@ -30,3 +31,10 @@ features:
     title: Instant Snapshots
     details: High-performance region cropping and full-screen snapshots copied directly to system clipboard.
 ---
+
+<style>
+/* Home-only: slightly stronger backdrop presence */
+.VPHome {
+  isolation: isolate;
+}
+</style>
