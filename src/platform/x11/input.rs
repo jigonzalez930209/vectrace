@@ -328,6 +328,25 @@ impl X11Backend {
         const XK_S_LOWER: u32 = 0x0073;
         const XK_S_UPPER: u32 = 0x0053;
 
+        const XK_P_LOWER: u32 = 0x0070;
+        const XK_P_UPPER: u32 = 0x0050;
+        const XK_H_LOWER: u32 = 0x0068;
+        const XK_H_UPPER: u32 = 0x0048;
+        const XK_L_LOWER: u32 = 0x006c;
+        const XK_L_UPPER: u32 = 0x004c;
+        const XK_A_LOWER: u32 = 0x0061;
+        const XK_A_UPPER: u32 = 0x0041;
+        const XK_E_LOWER: u32 = 0x0065;
+        const XK_E_UPPER: u32 = 0x0045;
+        const XK_T_LOWER: u32 = 0x0074;
+        const XK_T_UPPER: u32 = 0x0054;
+        const XK_K_LOWER: u32 = 0x006b;
+        const XK_K_UPPER: u32 = 0x004b;
+        const XK_O_LOWER: u32 = 0x006f;
+        const XK_O_UPPER: u32 = 0x004f;
+        const XK_M_LOWER: u32 = 0x006d;
+        const XK_M_UPPER: u32 = 0x004d;
+
         let is_ctrl = (state & u16::from(ModMask::CONTROL)) != 0;
         let is_alt  = (state & u16::from(ModMask::M1)) != 0;
 
@@ -387,10 +406,50 @@ impl X11Backend {
                         return Ok(true); // signal "exit"
                     }
                 }
+                XK_P_LOWER | XK_P_UPPER => {
+                    self.active_tool = Tool::default_pen();
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_H_LOWER | XK_H_UPPER => {
+                    self.active_tool = Tool::default_highlighter();
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_L_LOWER | XK_L_UPPER => {
+                    self.active_tool = Tool::default_shape(crate::core::ShapeKind::Line);
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_A_LOWER | XK_A_UPPER => {
+                    self.active_tool = Tool::default_shape(crate::core::ShapeKind::Arrow);
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_E_LOWER | XK_E_UPPER => {
+                    self.active_tool = Tool::default_eraser();
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_T_LOWER | XK_T_UPPER => {
+                    self.active_tool = Tool::default_text();
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_K_LOWER | XK_K_UPPER => {
+                    self.active_tool = Tool::default_laser();
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_O_LOWER | XK_O_UPPER => {
+                    self.active_tool = Tool::default_spotlight();
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_M_LOWER | XK_M_UPPER => {
+                    self.set_hidden(conn, win_id, root, gc_id, canvas, toolbar, true)?;
+                }
                 XK_S_LOWER | XK_S_UPPER => {
                     let is_shift = (state & u16::from(ModMask::SHIFT)) != 0;
                     if is_ctrl && is_shift {
                         self.active_tool = Tool::default_select_region();
+                    } else if self.crop_start.is_some() && self.crop_current.is_some() {
+                        if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
+                            self.trigger_save_crop(conn, win_id, root, canvas, sx, sy, cx, cy);
+                        }
+                        self.active_tool = Tool::default_pen();
                     } else {
                         self.trigger_save_full(conn, win_id, root, canvas);
                     }

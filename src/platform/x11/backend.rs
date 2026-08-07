@@ -219,19 +219,11 @@ impl X11Backend {
             self.passthrough = true;
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
-            let offscreen_rect = [Rectangle { x: -32000, y: -32000, width: 1, height: 1 }];
-            let _ = conn.shape_rectangles(ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &offscreen_rect);
-            if let Some(ref mut pixmap) = self.base_pixmap {
-                pixmap.fill(tiny_skia::Color::TRANSPARENT);
-            }
-            if let Some(ref mut pixmap) = self.active_pixmap {
-                pixmap.fill(tiny_skia::Color::TRANSPARENT);
-            }
-            self.x11_pixels.clear();
-            self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            let _ = conn.unmap_window(win_id);
             let _ = conn.flush();
         } else {
             println!("Restoring Vectrace overlay window from System Tray...");
+            let _ = conn.map_window(win_id);
             self.passthrough = false;
             self.completed_strokes_dirty = true;
             self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
