@@ -677,6 +677,7 @@ impl PlatformBackend for WaylandBackend {
                 self.show_color_menu,
                 self.monitor_mode,
                 false,
+                None,
             );
 
 
