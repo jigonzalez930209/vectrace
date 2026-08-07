@@ -1,0 +1,309 @@
+use std::sync::OnceLock;
+
+use crate::core::canvas::{BlendMode, Color, Point, Stroke, StrokeType};
+
+
+static SYSTEM_FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
+
+pub fn get_system_font() -> &'static Option<fontdue::Font> {
+    SYSTEM_FONT.get_or_init(|| {
+        let font_paths = [
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            "/usr/share/fonts/cantarell/Cantarell-Regular.otf",
+            "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            "/usr/share/fonts/gnu-free/FreeSans.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+            "/usr/share/fonts/roboto/hinted/Roboto-Regular.ttf",
+            "/usr/share/fonts/TTF/Roboto-Regular.ttf",
+            "/usr/share/fonts/gsfonts/NimbusSans-Regular.otf",
+        ];
+
+        for path in &font_paths {
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(font) = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
+                    return Some(font);
+                }
+            }
+        }
+        None
+    })
+}
+
+/// Renders a text string onto a pixmap using alpha blending directly into the RGBA buffer.
+/// PERFORMANCE: Avoids per-pixel `fill_rect` calls by compositing directly into the pixel buffer
+/// using Porter-Duff SourceOver alpha blending. This eliminates thousands of tiny-skia drawcalls.
+pub fn render_text_to_pixmap(
+    text: &str,
+    start_x: f32,
+    start_y: f32,
+    font_size: f32,
+    color: Color,
+    _blend_mode: BlendMode,
+    pixmap: &mut tiny_skia::Pixmap,
+) {
+    if let Some(font) = get_system_font() {
+        let font_size = font_size.round().max(1.0);
+        let mut cur_x = start_x.round();
+        let baseline_y = (start_y + font_size * 0.8).round();
+        let pix_w = pixmap.width() as i32;
+        let pix_h = pixmap.height() as i32;
+        let data = pixmap.data_mut();
+
+        for ch in text.chars() {
+            let (metrics, bitmap) = font.rasterize(ch, font_size);
+            if metrics.width > 0 && metrics.height > 0 {
+                let gx = (cur_x + metrics.bounds.xmin).round() as i32;
+                let gy = (baseline_y - metrics.bounds.ymin - metrics.height as f32).round() as i32;
+
+                for row in 0..metrics.height as i32 {
+                    let py = gy + row;
+                    if py < 0 || py >= pix_h {
+                        continue;
+                    }
+                    for col in 0..metrics.width as i32 {
+                        let px = gx + col;
+                        if px < 0 || px >= pix_w {
+                            continue;
+                        }
+                        let alpha_coverage = bitmap[(row as usize) * metrics.width + col as usize];
+                        if alpha_coverage == 0 {
+                            continue;
+                        }
+                        // Combined source alpha (glyph coverage × color alpha)
+                        let src_a = ((color.a as u32 * alpha_coverage as u32) / 255) as u8;
+                        if src_a == 0 {
+                            continue;
+                        }
+                        let dst_idx = ((py * pix_w + px) as usize) * 4;
+                        // Porter-Duff SourceOver: out = src + dst * (1 - src_a)
+                        let inv_a = 255u32 - src_a as u32;
+                        let src_a32 = src_a as u32;
+                        data[dst_idx]     = ((color.r as u32 * src_a32 + data[dst_idx] as u32 * inv_a) / 255) as u8;
+                        data[dst_idx + 1] = ((color.g as u32 * src_a32 + data[dst_idx + 1] as u32 * inv_a) / 255) as u8;
+                        data[dst_idx + 2] = ((color.b as u32 * src_a32 + data[dst_idx + 2] as u32 * inv_a) / 255) as u8;
+                        data[dst_idx + 3] = (src_a32 + data[dst_idx + 3] as u32 * inv_a / 255) as u8;
+                    }
+                }
+            }
+            cur_x = (cur_x + metrics.advance_width).round();
+        }
+    }
+}
+
+pub fn render_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
+    if stroke.points.is_empty() {
+        return;
+    }
+
+    if stroke.stroke_type == StrokeType::Text {
+        if let Some(ref text) = stroke.text_content {
+            let start_p = stroke.points[0];
+            render_text_to_pixmap(text, start_p.x, start_p.y, stroke.font_size, stroke.color, stroke.blend_mode, pixmap);
+        }
+        return;
+    }
+
+    let mut pb = tiny_skia::PathBuilder::new();
+
+    match stroke.stroke_type {
+        StrokeType::Freehand => {
+            let smoothed = stroke.smoothed_points(5);
+            if smoothed.is_empty() {
+                return;
+            }
+            pb.move_to(smoothed[0].x, smoothed[0].y);
+            for pt in &smoothed[1..] {
+                pb.line_to(pt.x, pt.y);
+            }
+        }
+        StrokeType::Line => {
+            let p1 = stroke.points[0];
+            let p2 = *stroke.points.last().unwrap();
+            pb.move_to(p1.x, p1.y);
+            pb.line_to(p2.x, p2.y);
+        }
+        StrokeType::Arrow => {
+            let p1 = stroke.points[0];
+            let p2 = *stroke.points.last().unwrap();
+            pb.move_to(p1.x, p1.y);
+            pb.line_to(p2.x, p2.y);
+
+            let dx = p2.x - p1.x;
+            let dy = p2.y - p1.y;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 2.0 {
+                let arrow_len = (stroke.width * 4.0).max(14.0);
+                let angle = dy.atan2(dx);
+
+                let angle1 = angle + std::f32::consts::PI * 0.85;
+                let angle2 = angle - std::f32::consts::PI * 0.85;
+
+                let x1 = p2.x + arrow_len * angle1.cos();
+                let y1 = p2.y + arrow_len * angle1.sin();
+                let x2 = p2.x + arrow_len * angle2.cos();
+                let y2 = p2.y + arrow_len * angle2.sin();
+
+                pb.move_to(p2.x, p2.y);
+                pb.line_to(x1, y1);
+                pb.move_to(p2.x, p2.y);
+                pb.line_to(x2, y2);
+            }
+        }
+        StrokeType::Rectangle => {
+            let p1 = stroke.points[0];
+            let p2 = *stroke.points.last().unwrap();
+            let x = f32::min(p1.x, p2.x).round();
+            let y = f32::min(p1.y, p2.y).round();
+            let w = (p1.x - p2.x).abs().round().max(1.0);
+            let h = (p1.y - p2.y).abs().round().max(1.0);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) {
+                pb.push_rect(rect);
+            }
+        }
+        StrokeType::Oval => {
+            let p1 = stroke.points[0];
+            let p2 = *stroke.points.last().unwrap();
+            let x = f32::min(p1.x, p2.x);
+            let y = f32::min(p1.y, p2.y);
+            let w = (p1.x - p2.x).abs();
+            let h = (p1.y - p2.y).abs();
+            if w > 0.5 && h > 0.5 {
+                let cx = x + w / 2.0;
+                let cy = y + h / 2.0;
+                let rx = w / 2.0;
+                let ry = h / 2.0;
+                let kappa = 0.55228475;
+                let ox = rx * kappa;
+                let oy = ry * kappa;
+                pb.move_to(cx - rx, cy);
+                pb.cubic_to(cx - rx, cy - oy, cx - ox, cy - ry, cx, cy - ry);
+                pb.cubic_to(cx + ox, cy - ry, cx + rx, cy - oy, cx + rx, cy);
+                pb.cubic_to(cx + rx, cy + oy, cx + ox, cy + ry, cx, cy + ry);
+                pb.cubic_to(cx - ox, cy + ry, cx - rx, cy + oy, cx - rx, cy);
+                pb.close();
+            }
+        }
+        StrokeType::Text | StrokeType::Laser | StrokeType::Spotlight => {}
+    }
+
+    if let Some(path) = pb.finish() {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(tiny_skia::Color::from_rgba8(
+            stroke.color.r,
+            stroke.color.g,
+            stroke.color.b,
+            stroke.color.a,
+        ));
+        paint.blend_mode = stroke.blend_mode.into();
+        paint.anti_alias = true;
+
+        let mut skia_stroke = tiny_skia::Stroke::default();
+        skia_stroke.width = stroke.width;
+        let is_shape = matches!(
+            stroke.stroke_type,
+            StrokeType::Rectangle | StrokeType::Oval | StrokeType::Line | StrokeType::Arrow
+        );
+        if is_shape {
+            skia_stroke.line_cap = tiny_skia::LineCap::Butt;
+            skia_stroke.line_join = tiny_skia::LineJoin::Miter;
+            skia_stroke.miter_limit = 4.0;
+        } else {
+            skia_stroke.line_cap = tiny_skia::LineCap::Round;
+            skia_stroke.line_join = tiny_skia::LineJoin::Round;
+        }
+
+        pixmap.stroke_path(&path, &paint, &skia_stroke, tiny_skia::Transform::identity(), None);
+    }
+}
+
+pub fn render_laser_stroke(stroke: &Stroke, now_ms: u64, pixmap: &mut tiny_skia::Pixmap) {
+    if stroke.points.len() < 2 {
+        return;
+    }
+
+    let max_age = 1200.0; // 1.2 seconds decay
+    let points = &stroke.points;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    let mut prev_pt: Option<Point> = None;
+
+    for pt in points.iter() {
+        let age = (now_ms.saturating_sub(pt.timestamp_ms)) as f32;
+        if age > max_age {
+            prev_pt = None;
+            continue;
+        }
+
+        if let Some(p0) = prev_pt {
+            pb.move_to(p0.x, p0.y);
+            pb.line_to(pt.x, pt.y);
+        }
+        prev_pt = Some(*pt);
+    }
+
+    if let Some(path) = pb.finish() {
+        let mut glow_paint = tiny_skia::Paint::default();
+        glow_paint.set_color(tiny_skia::Color::from_rgba8(stroke.color.r, stroke.color.g, stroke.color.b, 120));
+        glow_paint.anti_alias = true;
+
+        let mut glow_stroke = tiny_skia::Stroke::default();
+        glow_stroke.width = stroke.width * 2.2;
+        glow_stroke.line_cap = tiny_skia::LineCap::Round;
+        glow_stroke.line_join = tiny_skia::LineJoin::Round;
+
+        pixmap.stroke_path(&path, &glow_paint, &glow_stroke, tiny_skia::Transform::identity(), None);
+
+        let mut core_paint = tiny_skia::Paint::default();
+        core_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 240));
+        core_paint.anti_alias = true;
+
+        let mut core_stroke = tiny_skia::Stroke::default();
+        core_stroke.width = stroke.width * 0.7;
+        core_stroke.line_cap = tiny_skia::LineCap::Round;
+        core_stroke.line_join = tiny_skia::LineJoin::Round;
+
+        pixmap.stroke_path(&path, &core_paint, &core_stroke, tiny_skia::Transform::identity(), None);
+    }
+}
+
+pub fn render_spotlight_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
+    if let Some(&p) = stroke.points.last() {
+        let cx = p.x;
+        let cy = p.y;
+        let r = stroke.width;
+
+        let mut cpb = tiny_skia::PathBuilder::new();
+        let kappa = 0.55228475;
+        let ox = r * kappa;
+        let oy = r * kappa;
+        cpb.move_to(cx - r, cy);
+        cpb.cubic_to(cx - r, cy - oy, cx - ox, cy - r, cx, cy - r);
+        cpb.cubic_to(cx + ox, cy - r, cx + r, cy - oy, cx + r, cy);
+        cpb.cubic_to(cx + r, cy + oy, cx + ox, cy + r, cx, cy + r);
+        cpb.cubic_to(cx - ox, cy + r, cx - r, cy + oy, cx - r, cy);
+        cpb.close();
+
+        if let Some(cpath) = cpb.finish() {
+            let mut clear_paint = tiny_skia::Paint::default();
+            clear_paint.blend_mode = tiny_skia::BlendMode::Clear;
+            clear_paint.anti_alias = true;
+            pixmap.fill_path(&cpath, &clear_paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+
+            let mut ring_paint = tiny_skia::Paint::default();
+            ring_paint.set_color(tiny_skia::Color::from_rgba8(50, 130, 245, 230));
+            ring_paint.anti_alias = true;
+
+            let mut ring_stroke = tiny_skia::Stroke::default();
+            ring_stroke.width = 3.0;
+            pixmap.stroke_path(&cpath, &ring_paint, &ring_stroke, tiny_skia::Transform::identity(), None);
+        }
+    }
+}
+
+
