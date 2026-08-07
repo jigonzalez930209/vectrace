@@ -1,4 +1,8 @@
 /target
 /e2e/reports/
 /e2e/nest/hyprland.conf
+node_modules/
 
+/docs/.vitepress/cache/
+
+/docs/.vitepress/dist/
