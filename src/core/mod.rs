@@ -12,4 +12,7 @@ pub use document::DocumentSnapshot;
 pub use tools::{Tool, ShapeKind};
 pub use config::{MonitorMode, AppConfig};
 pub use toast::ToastNotification;
-pub use export::{secs_to_datetime, render_crop_selection, save_pixmap_to_file};
+pub use export::{
+    secs_to_datetime, render_crop_selection, save_pixmap_to_file,
+    compose_desktop_with_strokes, map_overlay_crop_to_desktop,
+};

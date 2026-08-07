@@ -41,6 +41,129 @@ pub fn prepare_export_pixmap(
     }
 }
 
+/// Map a crop rect from overlay-local coords into desktop-capture coords.
+///
+/// Handles primary-overlay + full-desktop capture (offset) and same-aspect
+/// resolution mismatches (uniform scale). Never applies independent X/Y scales
+/// that would distort the selection.
+pub fn map_overlay_crop_to_desktop(
+    crop: (u32, u32, u32, u32),
+    overlay_w: u32,
+    overlay_h: u32,
+    overlay_x: i32,
+    overlay_y: i32,
+    desktop_w: u32,
+    desktop_h: u32,
+) -> (u32, u32, u32, u32) {
+    let (cx, cy, cw, ch) = crop;
+    if overlay_w == 0 || overlay_h == 0 || desktop_w == 0 || desktop_h == 0 {
+        return crop;
+    }
+    if desktop_w == overlay_w && desktop_h == overlay_h {
+        return crop;
+    }
+
+    let sx = desktop_w as f32 / overlay_w as f32;
+    let sy = desktop_h as f32 / overlay_h as f32;
+
+    // Full desktop larger than overlay (typical primary mode): offset 1:1.
+    if desktop_w >= overlay_w
+        && desktop_h >= overlay_h
+        && (sx - 1.0).abs() < 0.02
+        && (sy - 1.0).abs() < 0.02
+    {
+        let x = (overlay_x.max(0) as u32).saturating_add(cx).min(desktop_w.saturating_sub(1));
+        let y = (overlay_y.max(0) as u32).saturating_add(cy).min(desktop_h.saturating_sub(1));
+        let w = cw.min(desktop_w.saturating_sub(x));
+        let h = ch.min(desktop_h.saturating_sub(y));
+        return (x, y, w, h);
+    }
+
+    // Same aspect (within 5%): uniform scale from overlay space → desktop space.
+    if (sx - sy).abs() / sx.max(sy) < 0.05 {
+        let scale = sx;
+        let x = ((overlay_x.max(0) as f32 + cx as f32) * scale)
+            .round()
+            .max(0.0) as u32;
+        let y = ((overlay_y.max(0) as f32 + cy as f32) * scale)
+            .round()
+            .max(0.0) as u32;
+        let w = ((cw as f32) * scale).round().max(1.0) as u32;
+        let h = ((ch as f32) * scale).round().max(1.0) as u32;
+        let x = x.min(desktop_w.saturating_sub(1));
+        let y = y.min(desktop_h.saturating_sub(1));
+        return (x, y, w.min(desktop_w - x), h.min(desktop_h - y));
+    }
+
+    // Fallback: offset only (better than distorting).
+    let x = (overlay_x.max(0) as u32).saturating_add(cx).min(desktop_w.saturating_sub(1));
+    let y = (overlay_y.max(0) as u32).saturating_add(cy).min(desktop_h.saturating_sub(1));
+    let w = cw.min(desktop_w.saturating_sub(x));
+    let h = ch.min(desktop_h.saturating_sub(y));
+    (x, y, w, h)
+}
+
+/// Build the final snapshot pixmap without distorting capture aspect ratio.
+///
+/// Dual-monitor portals often return 3840×1080 while a primary overlay is
+/// 1920×1080. Stretching independently on X/Y squashes the desktop — we keep
+/// the capture's native pixels and blit annotations at the overlay origin.
+pub fn compose_desktop_with_strokes(
+    desktop: Option<tiny_skia::Pixmap>,
+    strokes: &[crate::core::Stroke],
+    overlay_w: u32,
+    overlay_h: u32,
+    overlay_x: i32,
+    overlay_y: i32,
+    render_fallback_bg: impl FnOnce(&mut tiny_skia::Pixmap),
+) -> tiny_skia::Pixmap {
+    let Some(mut desktop) = desktop else {
+        let mut pixmap = tiny_skia::Pixmap::new(overlay_w.max(1), overlay_h.max(1)).unwrap();
+        render_fallback_bg(&mut pixmap);
+        for stroke in strokes {
+            crate::core::render::render_stroke(stroke, &mut pixmap);
+        }
+        return pixmap;
+    };
+
+    let dw = desktop.width();
+    let dh = desktop.height();
+
+    if dw == overlay_w && dh == overlay_h {
+        for stroke in strokes {
+            crate::core::render::render_stroke(stroke, &mut desktop);
+        }
+        return desktop;
+    }
+
+    println!(
+        "Snapshot keep native capture {}x{} (overlay {}x{}+{}+{}) — no aspect squash",
+        dw, dh, overlay_w, overlay_h, overlay_x, overlay_y
+    );
+
+    if strokes.is_empty() {
+        return desktop;
+    }
+
+    // Render annotations in overlay space, then blit onto the desktop at origin.
+    if let Some(mut layer) = tiny_skia::Pixmap::new(overlay_w.max(1), overlay_h.max(1)) {
+        for stroke in strokes {
+            crate::core::render::render_stroke(stroke, &mut layer);
+        }
+        let paint = tiny_skia::PixmapPaint::default();
+        desktop.draw_pixmap(
+            overlay_x,
+            overlay_y,
+            layer.as_ref(),
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    desktop
+}
+
 fn build_export_path(is_crop: bool) -> std::path::PathBuf {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -85,6 +208,20 @@ pub fn save_pixmap_to_file(pixmap: &tiny_skia::Pixmap, crop_rect: Option<(u32, u
 }
 
 pub fn render_crop_selection(pixmap: &mut tiny_skia::Pixmap, x: f32, y: f32, w: f32, h: f32, scale: f32) {
+    render_crop_selection_ex(pixmap, x, y, w, h, scale, true);
+}
+
+/// Crop UI. When `dim_outside` is false, only the border/grips are drawn (caller
+/// already applied a dim veil — used for fast dirty-rect crop dragging).
+pub fn render_crop_selection_ex(
+    pixmap: &mut tiny_skia::Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    scale: f32,
+    dim_outside: bool,
+) {
     use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
     let min_x = x.min(x + w);
@@ -98,22 +235,24 @@ pub fn render_crop_selection(pixmap: &mut tiny_skia::Pixmap, x: f32, y: f32, w: 
         return;
     }
 
-    let pix_w = pixmap.width() as f32;
-    let pix_h = pixmap.height() as f32;
-    let mut mask_paint = Paint::default();
-    mask_paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 110));
+    if dim_outside {
+        let pix_w = pixmap.width() as f32;
+        let pix_h = pixmap.height() as f32;
+        let mut mask_paint = Paint::default();
+        mask_paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 110));
 
-    if let Some(p) = tiny_skia::Rect::from_xywh(0.0, 0.0, pix_w, min_y) {
-        pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
-    }
-    if let Some(p) = tiny_skia::Rect::from_xywh(0.0, max_y, pix_w, (pix_h - max_y).max(0.0)) {
-        pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
-    }
-    if let Some(p) = tiny_skia::Rect::from_xywh(0.0, min_y, min_x, rect_h) {
-        pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
-    }
-    if let Some(p) = tiny_skia::Rect::from_xywh(max_x, min_y, (pix_w - max_x).max(0.0), rect_h) {
-        pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
+        if let Some(p) = tiny_skia::Rect::from_xywh(0.0, 0.0, pix_w, min_y) {
+            pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
+        }
+        if let Some(p) = tiny_skia::Rect::from_xywh(0.0, max_y, pix_w, (pix_h - max_y).max(0.0)) {
+            pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
+        }
+        if let Some(p) = tiny_skia::Rect::from_xywh(0.0, min_y, min_x, rect_h) {
+            pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
+        }
+        if let Some(p) = tiny_skia::Rect::from_xywh(max_x, min_y, (pix_w - max_x).max(0.0), rect_h) {
+            pixmap.fill_rect(p, &mask_paint, Transform::identity(), None);
+        }
     }
 
     let mut border_pb = PathBuilder::new();
