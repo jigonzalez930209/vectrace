@@ -14,10 +14,9 @@ use std::error::Error;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ColormapAlloc, CreateWindowAux, CreateGCAux, EventMask, PropMode, WindowClass,
+    ColormapAlloc, CreateWindowAux, CreateGCAux, EventMask, WindowClass,
     ConnectionExt as _,
 };
-use x11rb::wrapper::ConnectionExt as _;
 
 // --------------------------------------------------------------------------
 // Crop selection types (used by backend, render, input submodules)
@@ -119,6 +118,9 @@ impl PlatformBackend for X11Backend {
         conn.create_colormap(ColormapAlloc::NONE, colormap, screen.root, visual_id)?;
 
         let win_id = conn.generate_id()?;
+        // On XWayland (GNOME), override_redirect + 32-bit ARGB is what enables a
+        // true see-through overlay. Managed/fullscreen Wayland surfaces are opaque
+        // by compositor policy. Keyboard focus is claimed via claim_keyboard / grabs.
         let win_aux = CreateWindowAux::new()
             .colormap(colormap)
             .border_pixel(0)
@@ -130,27 +132,27 @@ impl PlatformBackend for X11Backend {
                 | EventMask::BUTTON_RELEASE
                 | EventMask::POINTER_MOTION
                 | EventMask::KEY_PRESS
+                | EventMask::KEY_RELEASE
                 | EventMask::STRUCTURE_NOTIFY
-                | EventMask::FOCUS_CHANGE,
+                | EventMask::FOCUS_CHANGE
+                | EventMask::ENTER_WINDOW
+                | EventMask::LEAVE_WINDOW,
             );
 
         conn.create_window(depth, win_id, screen.root, win_x, win_y, self.width, self.height, 0, WindowClass::INPUT_OUTPUT, visual_id, &win_aux)?;
 
-        let wm_state              = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-        let wm_state_above        = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
-        let wm_state_skip_taskbar = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?.reply()?.atom;
-        let wm_state_skip_pager   = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_PAGER")?.reply()?.atom;
-        let wm_type               = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
-        let wm_type_dock          = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK")?.reply()?.atom;
-
-        conn.change_property32(PropMode::REPLACE, win_id, wm_type, AtomEnum::ATOM, &[wm_type_dock])?;
-        conn.change_property32(PropMode::REPLACE, win_id, wm_state, AtomEnum::ATOM, &[wm_state_above, wm_state_skip_taskbar, wm_state_skip_pager])?;
+        // WM hints are ignored for override-redirect, but harmless if present.
+        let _ = window::configure_overlay_wm_hints(&conn, screen.root, win_id);
 
         let gc_id = conn.generate_id()?;
         conn.create_gc(gc_id, win_id, &CreateGCAux::new())?;
 
         conn.map_window(win_id)?;
-        window::focus_x11_window(&conn, screen.root, win_id);
+        let _ = conn.flush();
+        // Give XWayland a moment to map before grabbing the keyboard.
+        let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        window::claim_keyboard(&conn, screen.root, win_id);
 
         let min_keycode = conn.setup().min_keycode;
         let max_keycode = conn.setup().max_keycode;
@@ -273,8 +275,21 @@ impl PlatformBackend for X11Backend {
 
             match event {
                 Event::Expose(_) => {
-                    window::focus_x11_window(&conn, screen.root, win_id);
+                    if !self.passthrough && !self.is_hidden {
+                        window::claim_keyboard_quiet(&conn, screen.root, win_id);
+                    }
                     self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                }
+                Event::FocusOut(_) => {
+                    // GNOME often pulls focus away after pointer interaction; reclaim immediately.
+                    if !self.passthrough && !self.is_hidden {
+                        window::claim_keyboard_quiet(&conn, screen.root, win_id);
+                    }
+                }
+                Event::FocusIn(_) => {
+                    if !self.passthrough && !self.is_hidden {
+                        window::claim_keyboard_quiet(&conn, screen.root, win_id);
+                    }
                 }
                 Event::ButtonPress(e) if e.detail == 1 => {
                     let should_exit = {

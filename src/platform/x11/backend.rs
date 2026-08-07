@@ -7,7 +7,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     Rectangle, ClipOrdering, ConnectionExt as _, InputFocus, Time,
 };
-use x11rb::protocol::shape::{SO as ShapeOp, SK as ShapeKind, ConnectionExt as _};
+use x11rb::protocol::shape::{SO as ShapeOp, SK as ShapeKind};
 use std::sync::mpsc::Receiver;
 
 pub struct X11Backend {
@@ -261,7 +261,7 @@ impl X11Backend {
         }
 
         if self.passthrough {
-            // Release overlay key grabs so keystrokes go to the app underneath.
+            // Release keyboard so the app underneath can receive typing.
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
             let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
@@ -281,10 +281,21 @@ impl X11Backend {
                     height: (130.0 * toolbar.scale_factor) as u16,
                 });
             }
+            if self.show_color_menu {
+                let menu_x = toolbar.x + toolbar.color_btn_logical_x() * toolbar.scale_factor;
+                let menu_y = toolbar.y + toolbar.height + 6.0 * toolbar.scale_factor;
+                rects.push(Rectangle {
+                    x: menu_x as i16,
+                    y: menu_y as i16,
+                    width: (150.0 * toolbar.scale_factor) as u16,
+                    height: (110.0 * toolbar.scale_factor) as u16,
+                });
+            }
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &rects)?;
         } else {
-            // Root XGrabKey is reliable on XWayland/GNOME; window focus/grab is not.
-            crate::platform::x11::window::focus_x11_window(conn, root, win_id);
+            crate::platform::x11::window::claim_keyboard(conn, root, win_id);
+            // Also grab tool keys on the root — helps on native X11; on XWayland
+            // grabs may be ignored while a Wayland app holds the seat.
             crate::platform::x11::window::grab_overlay_keys(conn, root, &self.overlay_keycodes);
             let rect = Rectangle { x: 0, y: 0, width: self.width, height: self.height };
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &[rect])?;

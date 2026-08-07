@@ -3,7 +3,7 @@
 use crate::core::{Canvas, Point, StrokeType};
 use crate::platform::x11::backend::X11Backend;
 use crate::platform::x11::render::{get_dirty_rect, compute_crop_dirty_rect};
-use crate::platform::x11::window::{focus_x11_window, keysym_to_char};
+use crate::platform::x11::window::{claim_keyboard_quiet, focus_x11_window, keysym_to_char};
 use crate::platform::x11::{CropDragState, CropHandle, CropHitResult, hit_test_crop, Tool};
 use crate::ui::{Toolbar, ToolbarAction};
 use x11rb::connection::Connection;
@@ -22,7 +22,13 @@ impl X11Backend {
         click_y: f32,
         now_ms: u64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        focus_x11_window(conn, root, win_id);
+        // Re-grab keyboard on every press so shortcuts work after drawing on the canvas
+        // (XWayland/GNOME drops focus when interacting with the overlay).
+        if !self.passthrough {
+            claim_keyboard_quiet(conn, root, win_id);
+        } else {
+            focus_x11_window(conn, root, win_id);
+        }
 
         let has_crop = self.crop_start.is_some() && self.crop_current.is_some();
 
@@ -314,6 +320,11 @@ impl X11Backend {
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
             }
+        }
+        // After drawing/clicking, GNOME/XWayland often steals keyboard focus — reclaim it
+        // so P/H/L/A/… keep switching tools without clicking the toolbar again.
+        if !self.passthrough && !self.is_hidden {
+            claim_keyboard_quiet(conn, root, win_id);
         }
         Ok(())
     }
