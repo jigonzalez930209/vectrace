@@ -46,7 +46,7 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/jigonzalez930209/vectrace' }
     ],
     footer: {
-      message: 'Released under the MIT and Apache-2.0 Dual Licenses.',
+      message: 'Released under the GNU General Public License v3.0 (GPL-3.0).',
       copyright: 'Copyright © 2026 Vectrace Developers'
     }
   }
