@@ -1,8 +1,6 @@
 # License & Legal Information
 
-Vectrace is open-source software dual-licensed under:
+Vectrace is free, open-source software licensed under the **GNU General Public License v3.0** (GPL-3.0).
 
-- **MIT License** ([LICENSE-MIT](https://github.com/jigonzalez930209/vectrace/blob/main/LICENSE-MIT))
-- **Apache License, Version 2.0** ([LICENSE-APACHE](https://github.com/jigonzalez930209/vectrace/blob/main/LICENSE-APACHE))
+- [GNU General Public License v3.0](https://github.com/jigonzalez930209/vectrace/blob/main/LICENSE)
 
-You may choose to use Vectrace under the terms of either license according to your project needs.
