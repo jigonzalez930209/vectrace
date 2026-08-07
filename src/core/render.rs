@@ -3,25 +3,24 @@ use std::sync::OnceLock;
 use crate::core::canvas::{BlendMode, Color, Point, Stroke, StrokeType};
 
 
+const EMBEDDED_FONT_BYTES: &[u8] = include_bytes!("../../assets/Roboto-Regular.ttf");
+
 static SYSTEM_FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
 
 pub fn get_system_font() -> &'static Option<fontdue::Font> {
     SYSTEM_FONT.get_or_init(|| {
+        if let Ok(font) = fontdue::Font::from_bytes(EMBEDDED_FONT_BYTES, fontdue::FontSettings::default()) {
+            return Some(font);
+        }
+
         let font_paths = [
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-            "/usr/share/fonts/cantarell/Cantarell-Regular.otf",
-            "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-            "/usr/share/fonts/gnu-free/FreeSans.ttf",
             "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-            "/usr/share/fonts/roboto/hinted/Roboto-Regular.ttf",
-            "/usr/share/fonts/TTF/Roboto-Regular.ttf",
-            "/usr/share/fonts/gsfonts/NimbusSans-Regular.otf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
         ];
 
         for path in &font_paths {
@@ -50,16 +49,22 @@ pub fn render_text_to_pixmap(
     if let Some(font) = get_system_font() {
         let font_size = font_size.round().max(1.0);
         let mut cur_x = start_x.round();
-        let baseline_y = (start_y + font_size * 0.8).round();
         let pix_w = pixmap.width() as i32;
         let pix_h = pixmap.height() as i32;
         let data = pixmap.data_mut();
+
+        // Retrieve font ascent to establish correct baseline for top-left aligned start_y
+        let font_metrics = font.horizontal_line_metrics(font_size);
+        let ascent = font_metrics.map(|m| m.ascent).unwrap_or(font_size * 0.8);
+        let baseline_y = start_y + ascent;
 
         for ch in text.chars() {
             let (metrics, bitmap) = font.rasterize(ch, font_size);
             if metrics.width > 0 && metrics.height > 0 {
                 let gx = (cur_x + metrics.bounds.xmin).round() as i32;
-                let gy = (baseline_y - metrics.bounds.ymin - metrics.height as f32).round() as i32;
+                // fontdue metrics.bounds.ymin is measured upwards from baseline.
+                // Top edge of glyph bitmap is: baseline_y - (metrics.bounds.ymin + metrics.bounds.height)
+                let gy = (baseline_y - metrics.bounds.ymin - metrics.bounds.height).round() as i32;
 
                 for row in 0..metrics.height as i32 {
                     let py = gy + row;
