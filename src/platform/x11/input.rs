@@ -30,6 +30,15 @@ impl X11Backend {
             focus_x11_window(conn, root, win_id);
         }
 
+        // Tray quick crop: no toolbar — drag a rectangle, capture on release.
+        if self.tray_quick_crop {
+            self.crop_start = Some((click_x, click_y));
+            self.crop_current = Some((click_x, click_y));
+            self.crop_drag_state = CropDragState::Creating;
+            self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            return Ok(());
+        }
+
         let has_crop = self.crop_start.is_some() && self.crop_current.is_some();
 
         if let Some(action) = toolbar.handle_click(click_x, click_y, self.show_settings_menu, self.show_color_menu, has_crop) {
@@ -92,11 +101,11 @@ impl X11Backend {
                     self.crop_drag_state = CropDragState::None;
                 }
                 ToolbarAction::SaveFull => {
-                    self.trigger_save_full(conn, win_id, root, canvas);
+                    self.trigger_save_full(conn, win_id, root, canvas, toolbar);
                 }
                 ToolbarAction::ConfirmCrop => {
                     if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
-                        self.trigger_save_crop(conn, win_id, root, canvas, sx, sy, cx, cy);
+                        self.trigger_save_crop(conn, win_id, root, canvas, toolbar, sx, sy, cx, cy, true);
                     }
                     self.active_tool = Tool::default_pen();
                     self.crop_drag_state = CropDragState::None;
@@ -303,6 +312,23 @@ impl X11Backend {
         canvas: &mut Canvas,
         toolbar: &Toolbar,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if self.tray_quick_crop {
+            let was_creating = matches!(self.crop_drag_state, CropDragState::Creating);
+            self.crop_drag_state = CropDragState::None;
+            if was_creating {
+                if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
+                    if (sx - cx).abs() >= 4.0 && (sy - cy).abs() >= 4.0 {
+                        // Desktop-only snapshot (no annotation overlay).
+                        self.trigger_save_crop(
+                            conn, win_id, root, canvas, toolbar, sx, sy, cx, cy, false,
+                        );
+                    }
+                }
+                self.end_tray_quick_crop(conn, win_id, root, gc_id, canvas, toolbar)?;
+            }
+            return Ok(());
+        }
+
         if matches!(self.active_tool, Tool::SelectRegion) && self.crop_drag_state != CropDragState::None {
             self.crop_drag_state = CropDragState::None;
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
@@ -381,8 +407,17 @@ impl X11Backend {
         let is_ctrl = (state & u16::from(ModMask::CONTROL)) != 0;
         let is_alt  = (state & u16::from(ModMask::M1)) != 0;
 
+        // Cancel tray quick-crop without capturing.
+        if self.tray_quick_crop && keysym == XK_ESCAPE {
+            self.end_tray_quick_crop(conn, win_id, root, gc_id, canvas, toolbar)?;
+            return Ok(false);
+        }
+
         // Global hotkey: Ctrl+Alt+A (works even while click-through so the app below can keep typing)
         if keycode_a > 0 && keycode == keycode_a && is_ctrl && is_alt {
+            if self.tray_quick_crop {
+                return Ok(false);
+            }
             self.passthrough = !self.passthrough;
             self.apply_passthrough(conn, win_id, root, toolbar)?;
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
@@ -391,7 +426,7 @@ impl X11Backend {
 
         // In click-through mode the keyboard is released to the app underneath —
         // ignore local tool shortcuts so they never steal typing from that app.
-        if self.passthrough {
+        if self.passthrough || self.tray_quick_crop {
             return Ok(false);
         }
 
@@ -524,11 +559,11 @@ impl X11Backend {
                         self.active_tool = Tool::default_select_region();
                     } else if self.crop_start.is_some() && self.crop_current.is_some() {
                         if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start.take(), self.crop_current.take()) {
-                            self.trigger_save_crop(conn, win_id, root, canvas, sx, sy, cx, cy);
+                            self.trigger_save_crop(conn, win_id, root, canvas, toolbar, sx, sy, cx, cy, true);
                         }
                         self.active_tool = Tool::default_pen();
                     } else {
-                        self.trigger_save_full(conn, win_id, root, canvas);
+                        self.trigger_save_full(conn, win_id, root, canvas, toolbar);
                     }
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }

@@ -5,7 +5,7 @@ use crate::platform::x11::CropDragState;
 use crate::ui::Toolbar;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    Rectangle, ClipOrdering, ConnectionExt as _, InputFocus, Time,
+    MapState, Rectangle, ClipOrdering, ConnectionExt as _, InputFocus, Time,
 };
 use x11rb::protocol::shape::{SO as ShapeOp, SK as ShapeKind};
 use std::sync::mpsc::Receiver;
@@ -34,6 +34,9 @@ pub struct X11Backend {
     pub prev_shape_bounds: Option<(f32, f32, f32, f32)>,
     pub toast_notification: Option<ToastNotification>,
     pub cached_desktop: Option<tiny_skia::Pixmap>,
+    /// Overlay position on the virtual desktop (for multi-monitor capture alignment).
+    pub overlay_x: i16,
+    pub overlay_y: i16,
     pub crop_start: Option<(f32, f32)>,
     pub crop_current: Option<(f32, f32)>,
     pub crop_drag_state: CropDragState,
@@ -41,6 +44,12 @@ pub struct X11Backend {
     pub mouse_pos: (f32, f32),
     /// Keycodes grabbed on the root window while the overlay is active (XWayland-safe).
     pub overlay_keycodes: Vec<u8>,
+    /// Tray "Save Region": crosshair overlay without toolbar; capture on mouse release.
+    pub tray_quick_crop: bool,
+    /// Cursor id for crosshair (0 = unset).
+    pub crosshair_cursor: u32,
+    /// Cached dim veil for fast crop dragging (avoids full-screen fill every motion).
+    pub crop_veil: Option<tiny_skia::Pixmap>,
 }
 
 impl X11Backend {
@@ -68,12 +77,17 @@ impl X11Backend {
             prev_shape_bounds: None,
             toast_notification: None,
             cached_desktop: None,
+            overlay_x: 0,
+            overlay_y: 0,
             crop_start: None,
             crop_current: None,
             crop_drag_state: CropDragState::None,
             hover_tooltip: None,
             mouse_pos: (0.0, 0.0),
             overlay_keycodes: Vec::new(),
+            tray_quick_crop: false,
+            crosshair_cursor: 0,
+            crop_veil: None,
         }
     }
 
@@ -89,16 +103,28 @@ impl X11Backend {
         win_id: u32,
         root: u32,
         canvas: &mut Canvas,
+        toolbar: &Toolbar,
     ) {
         let w = self.width as u32;
         let h = self.height as u32;
         if w == 0 || h == 0 { return; }
 
+        let overlay_x = self.overlay_x as i32;
+        let overlay_y = self.overlay_y as i32;
         let bg_mode = canvas.background_mode;
         let doc = canvas.snapshot();
 
         if bg_mode == BackgroundMode::Transparent {
-            self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
+            self.cached_desktop = capture_desktop_background(
+                conn,
+                win_id,
+                root,
+                self.width,
+                self.height,
+                self.overlay_x,
+                self.overlay_y,
+            );
+            let _ = self.apply_passthrough(conn, win_id, root, toolbar);
         }
         let desktop_opt = self.cached_desktop.clone();
 
@@ -109,19 +135,32 @@ impl X11Backend {
         }
 
         std::thread::spawn(move || {
-            let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
-            if let Some(desktop_pixmap) = desktop_opt {
-                temp_pixmap = desktop_pixmap;
-            } else {
-                doc.render_background(&mut temp_pixmap);
-            }
-            for stroke in &doc.strokes {
-                crate::core::render::render_stroke(stroke, &mut temp_pixmap);
-            }
+            let temp_pixmap = crate::core::compose_desktop_with_strokes(
+                desktop_opt,
+                &doc.strokes,
+                w,
+                h,
+                overlay_x,
+                overlay_y,
+                |pixmap| doc.render_background(pixmap),
+            );
             match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
                 Ok((path, copied)) => {
-                    if copied { println!("Full Screen saved and copied to clipboard: {}", path); }
-                    else       { println!("Full Screen saved to: {} (clipboard copy failed)", path); }
+                    if copied {
+                        println!(
+                            "Full Screen saved {}x{} and copied to clipboard: {}",
+                            temp_pixmap.width(),
+                            temp_pixmap.height(),
+                            path
+                        );
+                    } else {
+                        println!(
+                            "Full Screen saved {}x{} to: {} (clipboard copy failed)",
+                            temp_pixmap.width(),
+                            temp_pixmap.height(),
+                            path
+                        );
+                    }
                 }
                 Err(e) => println!("Failed to save full screen: {}", e),
             }
@@ -136,15 +175,19 @@ impl X11Backend {
         win_id: u32,
         root: u32,
         canvas: &mut Canvas,
+        toolbar: &Toolbar,
         sx: f32,
         sy: f32,
         cx: f32,
         cy: f32,
+        include_annotations: bool,
     ) {
         let w = self.width as u32;
         let h = self.height as u32;
         if w == 0 || h == 0 { return; }
 
+        let overlay_x = self.overlay_x as i32;
+        let overlay_y = self.overlay_y as i32;
         let scale = self.scale_factor;
         let min_x = ((sx.min(cx) * scale).max(0.0)).min((w.saturating_sub(1)) as f32) as u32;
         let min_y = ((sy.min(cy) * scale).max(0.0)).min((h.saturating_sub(1)) as f32) as u32;
@@ -154,47 +197,75 @@ impl X11Backend {
         if crop_w < 4 || crop_h < 4 { return; }
 
         let bg_mode = canvas.background_mode;
-        let doc = canvas.snapshot();
+        let doc = if include_annotations {
+            Some(canvas.snapshot())
+        } else {
+            None
+        };
 
-        let desktop_opt = if bg_mode == BackgroundMode::Transparent {
-            let captured = capture_desktop_background(conn, win_id, root, self.width, self.height);
+        let need_desktop = !include_annotations || bg_mode == BackgroundMode::Transparent;
+        let desktop_opt = if need_desktop {
+            let captured = capture_desktop_background(
+                conn,
+                win_id,
+                root,
+                self.width,
+                self.height,
+                self.overlay_x,
+                self.overlay_y,
+            );
             self.cached_desktop = captured.clone();
+            let _ = self.apply_passthrough(conn, win_id, root, toolbar);
             captured
         } else {
             None
         };
 
-        if bg_mode == BackgroundMode::Transparent && desktop_opt.is_none() {
-            println!("Capture failed: desktop background unavailable (Transparent mode)");
+        if need_desktop && desktop_opt.is_none() {
+            println!("Capture failed: desktop background unavailable");
             self.toast_notification = Some(ToastNotification::new("Capture failed (flash path disabled)", 3000));
             return;
         }
 
         std::thread::spawn(move || {
-            let mut temp_pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
-            if let Some(desktop_pixmap) = desktop_opt {
-                temp_pixmap = desktop_pixmap;
-            } else {
-                doc.render_background(&mut temp_pixmap);
-            }
-            for stroke in &doc.strokes {
-                crate::core::render::render_stroke(stroke, &mut temp_pixmap);
-            }
+            let strokes: &[crate::core::Stroke] = doc.as_ref().map(|d| d.strokes.as_slice()).unwrap_or(&[]);
+            let temp_pixmap = crate::core::compose_desktop_with_strokes(
+                desktop_opt,
+                strokes,
+                w,
+                h,
+                overlay_x,
+                overlay_y,
+                |pixmap| {
+                    if let Some(ref doc) = doc {
+                        doc.render_background(pixmap);
+                    } else {
+                        pixmap.fill(tiny_skia::Color::BLACK);
+                    }
+                },
+            );
 
-            match crate::platform::clipboard::save_and_copy_pixmap(
-                &temp_pixmap,
-                Some((min_x, min_y, crop_w, crop_h)),
-            ) {
+            let crop = crate::core::map_overlay_crop_to_desktop(
+                (min_x, min_y, crop_w, crop_h),
+                w,
+                h,
+                overlay_x,
+                overlay_y,
+                temp_pixmap.width(),
+                temp_pixmap.height(),
+            );
+
+            match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, Some(crop)) {
                 Ok((path, copied)) => {
                     if copied {
                         println!(
                             "Cropped Region ({}x{}) saved and copied to clipboard: {}",
-                            crop_w, crop_h, path
+                            crop.2, crop.3, path
                         );
                     } else {
                         println!(
                             "Cropped Region ({}x{}) saved to: {} (clipboard copy failed)",
-                            crop_w, crop_h, path
+                            crop.2, crop.3, path
                         );
                     }
                 }
@@ -208,6 +279,62 @@ impl X11Backend {
             format!("Saved Crop + copied ({}x{})", crop_w, crop_h),
             3000,
         ));
+    }
+
+    /// Enter tray region-capture: map a transparent overlay with crosshair, no toolbar.
+    pub fn begin_tray_quick_crop(
+        &mut self,
+        conn: &impl Connection,
+        win_id: u32,
+        root: u32,
+        toolbar: &Toolbar,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let was_hidden = self.is_hidden;
+        self.tray_quick_crop = true;
+        self.is_hidden = false;
+        self.passthrough = false;
+        self.show_settings_menu = false;
+        self.show_color_menu = false;
+        self.active_tool = Tool::default_select_region();
+        self.crop_start = None;
+        self.crop_current = None;
+        self.crop_drag_state = CropDragState::None;
+        self.hover_tooltip = None;
+
+        if was_hidden {
+            println!("Tray quick crop: mapping overlay (no toolbar)...");
+            let _ = conn.map_window(win_id);
+            let _ = conn.flush();
+        }
+
+        self.apply_passthrough(conn, win_id, root, toolbar)?;
+        crate::platform::x11::window::clear_window_cursor(conn, win_id, self.crosshair_cursor);
+        self.crosshair_cursor = crate::platform::x11::window::set_crosshair_cursor(conn, win_id).unwrap_or(0);
+        crate::platform::x11::window::claim_keyboard_quiet(conn, root, win_id);
+        println!("System Tray Action: Quick region capture (crosshair) — drag to select, release to save, Esc to cancel");
+        Ok(())
+    }
+
+    /// Leave tray region-capture and return to the system tray.
+    pub fn end_tray_quick_crop(
+        &mut self,
+        conn: &impl Connection,
+        win_id: u32,
+        root: u32,
+        gc_id: u32,
+        canvas: &mut Canvas,
+        toolbar: &Toolbar,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.tray_quick_crop = false;
+        self.crop_start = None;
+        self.crop_current = None;
+        self.crop_drag_state = CropDragState::None;
+        self.active_tool = Tool::default_pen();
+        self.crop_veil = None;
+        crate::platform::x11::window::clear_window_cursor(conn, win_id, self.crosshair_cursor);
+        self.crosshair_cursor = 0;
+        self.set_hidden(conn, win_id, root, gc_id, canvas, toolbar, true)?;
+        Ok(())
     }
 
     pub fn set_hidden(
@@ -234,7 +361,15 @@ impl X11Backend {
             let _ = conn.map_window(win_id);
             self.passthrough = false;
             self.completed_strokes_dirty = true;
-            self.cached_desktop = capture_desktop_background(conn, win_id, root, self.width, self.height);
+            self.cached_desktop = capture_desktop_background(
+                conn,
+                win_id,
+                root,
+                self.width,
+                self.height,
+                self.overlay_x,
+                self.overlay_y,
+            );
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
             self.apply_passthrough(conn, win_id, root, toolbar)?;
             crate::platform::x11::window::focus_x11_window(conn, root, win_id);
@@ -306,27 +441,48 @@ impl X11Backend {
 }
 
 /// Captures the desktop background by briefly hiding the overlay window.
-/// PERFORMANCE: Sleep reduced to 80ms from 120ms while still giving the compositor
-/// enough time to repaint without the overlay.
+///
+/// If the overlay is already unmapped (e.g. minimized to tray), it is left
+/// unmapped — remapping it used to leave a transparent fullscreen window that
+/// ate all input ("frozen desktop").
+///
+/// Portal/Mutter captures are returned at **native** resolution. We never
+/// stretch them to the overlay size with independent X/Y scales (that squashed
+/// dual-monitor 3840×1080 into 1920×1080).
 pub fn capture_desktop_background(
     conn: &impl Connection,
     win_id: u32,
     root: u32,
     w: u16,
     h: u16,
+    overlay_x: i16,
+    overlay_y: i16,
 ) -> Option<tiny_skia::Pixmap> {
     if w == 0 || h == 0 { return None; }
 
-    let _ = conn.unmap_window(win_id);
-    let _ = conn.flush();
-    let _ = conn.get_input_focus().map(|c| c.reply());
-    // PERFORMANCE: Reduced from 120ms to 80ms — sufficient for most compositors.
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    let was_mapped = conn
+        .get_window_attributes(win_id)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|attrs| attrs.map_state != MapState::UNMAPPED)
+        .unwrap_or(true);
+
+    if was_mapped {
+        let _ = conn.unmap_window(win_id);
+        let _ = conn.flush();
+        let _ = conn.get_input_focus().map(|c| c.reply());
+        // Give the compositor time to repaint without the overlay.
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
 
     let reply = conn.get_image(
         x11rb::protocol::xproto::ImageFormat::Z_PIXMAP,
         root,
-        0, 0, w, h, !0,
+        overlay_x,
+        overlay_y,
+        w,
+        h,
+        !0,
     ).ok().and_then(|c| c.reply().ok());
 
     let res = if let Some(reply) = reply {
@@ -346,25 +502,28 @@ pub fn capture_desktop_background(
             } else { None }
         } else { None }
     } else {
-        // Fallback for XWayland: ScreenCast portal capture
+        // Fallback for XWayland: ScreenCast portal / Mutter (native size, no squash).
         match crate::platform::wayland::capture::portal::PortalClient::take_screenshot() {
             Ok(desktop_pixmap) => {
-                if desktop_pixmap.width() == w as u32 && desktop_pixmap.height() == h as u32 {
-                    Some(desktop_pixmap)
-                } else {
-                    let mut scaled = tiny_skia::Pixmap::new(w as u32, h as u32)?;
-                    let scale_x = w as f32 / desktop_pixmap.width() as f32;
-                    let scale_y = h as f32 / desktop_pixmap.height() as f32;
-                    let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
-                    scaled.draw_pixmap(0, 0, desktop_pixmap.as_ref(), &tiny_skia::PixmapPaint::default(), transform, None);
-                    Some(scaled)
-                }
+                println!(
+                    "Portal/Mutter capture {}x{} (overlay {}x{}+{}+{})",
+                    desktop_pixmap.width(),
+                    desktop_pixmap.height(),
+                    w,
+                    h,
+                    overlay_x,
+                    overlay_y
+                );
+                Some(desktop_pixmap)
             }
             Err(e) => { println!("Desktop capture failed: {:?}", e); None }
         }
     };
 
-    let _ = conn.map_window(win_id);
-    let _ = conn.flush();
+    // Only restore mapping if we temporarily hid a visible overlay.
+    if was_mapped {
+        let _ = conn.map_window(win_id);
+        let _ = conn.flush();
+    }
     res
 }

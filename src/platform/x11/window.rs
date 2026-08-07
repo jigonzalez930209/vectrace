@@ -311,3 +311,46 @@ pub fn keysym_to_char(keysym: u32) -> Option<char> {
         _ => None,
     }
 }
+
+/// XC_crosshair from X11 cursorfont.h
+const XC_CROSSHAIR: u16 = 34;
+
+/// Apply a crosshair cursor for tray region-capture mode.
+pub fn set_crosshair_cursor(conn: &impl Connection, win_id: u32) -> Result<u32, Box<dyn std::error::Error>> {
+    use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _};
+
+    let font = conn.generate_id()?;
+    conn.open_font(font, b"cursor")?;
+
+    let cursor = conn.generate_id()?;
+    // Source glyph + mask glyph (convention: mask = shape + 1)
+    conn.create_glyph_cursor(
+        cursor,
+        font,
+        font,
+        XC_CROSSHAIR,
+        XC_CROSSHAIR + 1,
+        0, 0, 0,
+        0xffff, 0xffff, 0xffff,
+    )?;
+    let _ = conn.close_font(font);
+
+    conn.change_window_attributes(
+        win_id,
+        &ChangeWindowAttributesAux::new().cursor(cursor),
+    )?;
+    conn.flush()?;
+    Ok(cursor)
+}
+
+pub fn clear_window_cursor(conn: &impl Connection, win_id: u32, cursor_id: u32) {
+    use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _};
+    let _ = conn.change_window_attributes(
+        win_id,
+        &ChangeWindowAttributesAux::new().cursor(0),
+    );
+    if cursor_id != 0 {
+        let _ = conn.free_cursor(cursor_id);
+    }
+    let _ = conn.flush();
+}

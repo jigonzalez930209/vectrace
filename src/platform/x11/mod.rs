@@ -96,6 +96,8 @@ impl PlatformBackend for X11Backend {
 
         self.width = win_w;
         self.height = win_h;
+        self.overlay_x = win_x;
+        self.overlay_y = win_y;
         canvas.resize(self.width as u32, self.height as u32);
         canvas.set_scale_factor(self.scale_factor);
 
@@ -230,6 +232,8 @@ impl PlatformBackend for X11Backend {
                             MonitorMode::All    => (0, 0, root_w, root_h),
                         };
                         self.width = win_w; self.height = win_h;
+                        self.overlay_x = win_x;
+                        self.overlay_y = win_y;
                         canvas.resize(self.width as u32, self.height as u32);
                         self.x11_pixels.clear();
                         self.completed_strokes_dirty = true;
@@ -244,8 +248,10 @@ impl PlatformBackend for X11Backend {
                     }
                     TrayEvent::CycleBackground => { canvas.cycle_background_mode(); }
                     TrayEvent::ClearCanvas     => { canvas.clear(); }
-                    TrayEvent::SaveFull        => { self.trigger_save_full(&conn, win_id, screen.root, canvas); }
-                    TrayEvent::SaveRegion      => { self.active_tool = Tool::default_select_region(); }
+                    TrayEvent::SaveFull        => { self.trigger_save_full(&conn, win_id, screen.root, canvas, &toolbar); }
+                    TrayEvent::SaveRegion      => {
+                        self.begin_tray_quick_crop(&conn, win_id, screen.root, &toolbar)?;
+                    }
                     TrayEvent::Exit            => { return Ok(()); }
                 }
                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
@@ -312,6 +318,8 @@ impl PlatformBackend for X11Backend {
                             MonitorMode::All    => (0, 0, root_w, root_h),
                         };
                         self.width = ww; self.height = wh;
+                        self.overlay_x = wx;
+                        self.overlay_y = wy;
                         canvas.resize(self.width as u32, self.height as u32);
                         self.x11_pixels.clear(); self.completed_strokes_dirty = true;
                         let _ = conn.configure_window(win_id, &x11rb::protocol::xproto::ConfigureWindowAux::new().x(wx as i32).y(wy as i32).width(ww as u32).height(wh as u32));

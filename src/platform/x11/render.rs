@@ -110,20 +110,53 @@ fn make_rect(min_x: f32, min_y: f32, max_x: f32, max_y: f32, sw: u16, sh: u16) -
     Rectangle { x: x1, y: y1, width: (x2 - x1).max(1) as u16, height: (y2 - y1).max(1) as u16 }
 }
 
-/// Always returns a full-screen dirty rect for crop selection redraws
-/// (the surrounding dimming changes over the whole screen).
+/// Dirty region covering previous + current crop selection (with handle padding).
 pub fn compute_crop_dirty_rect(
-    _old: Option<(f32, f32, f32, f32)>,
-    _new: Option<(f32, f32, f32, f32)>,
+    old: Option<(f32, f32, f32, f32)>,
+    new: Option<(f32, f32, f32, f32)>,
     screen_w: u16,
     screen_h: u16,
-    _scale: f32,
+    scale: f32,
 ) -> Option<Rectangle> {
     if screen_w == 0 || screen_h == 0 {
-        None
-    } else {
-        Some(Rectangle { x: 0, y: 0, width: screen_w, height: screen_h })
+        return None;
     }
+
+    let pad = (16.0 * scale.max(1.0)).ceil();
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    let mut any = false;
+
+    for rect in [old, new] {
+        let Some((sx, sy, cx, cy)) = rect else { continue };
+        any = true;
+        min_x = min_x.min(sx.min(cx));
+        min_y = min_y.min(sy.min(cy));
+        max_x = max_x.max(sx.max(cx));
+        max_y = max_y.max(sy.max(cy));
+    }
+
+    if !any {
+        return Some(Rectangle {
+            x: 0,
+            y: 0,
+            width: screen_w,
+            height: screen_h,
+        });
+    }
+
+    let x1 = (min_x - pad).floor().max(0.0) as i16;
+    let y1 = (min_y - pad).floor().max(0.0) as i16;
+    let x2 = (max_x + pad).ceil().min(screen_w as f32) as i16;
+    let y2 = (max_y + pad).ceil().min(screen_h as f32) as i16;
+    Some(Rectangle {
+        x: x1,
+        y: y1,
+        width: (x2 - x1).max(1) as u16,
+        height: (y2 - y1).max(1) as u16,
+    })
 }
 
 impl X11Backend {
@@ -148,11 +181,9 @@ impl X11Backend {
             self.x11_pixels = vec![0u8; expected_len];
             self.base_pixmap = Some(tiny_skia::Pixmap::new(w, h).unwrap());
             self.active_pixmap = Some(tiny_skia::Pixmap::new(w, h).unwrap());
+            self.crop_veil = None;
             self.completed_strokes_dirty = true;
         }
-
-        let base = self.base_pixmap.as_mut().unwrap();
-        let active = self.active_pixmap.as_mut().unwrap();
 
         let blit_rect = rect.unwrap_or(Rectangle { x: 0, y: 0, width: self.width, height: self.height });
 
@@ -164,6 +195,14 @@ impl X11Backend {
         if rw == 0 || rh == 0 {
             return Ok(());
         }
+
+        // Fast path: tray quick-crop never needs strokes/toolbar — veil + hole only.
+        if self.tray_quick_crop {
+            return self.redraw_tray_quick_crop(conn, win_id, gc_id, rx, ry, rw, rh);
+        }
+
+        let base = self.base_pixmap.as_mut().unwrap();
+        let active = self.active_pixmap.as_mut().unwrap();
 
         if self.completed_strokes_dirty {
             canvas.render_background(base);
@@ -217,7 +256,41 @@ impl X11Backend {
         }
 
         if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
-            crate::core::render_crop_selection(active, sx, sy, cx - sx, cy - sy, self.scale_factor);
+            // Dim only the dirty region, punch the selection hole from base, draw grips.
+            let mut dim = tiny_skia::Paint::default();
+            dim.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 110));
+            if let Some(r) = tiny_skia::Rect::from_xywh(rx as f32, ry as f32, rw as f32, rh as f32) {
+                active.fill_rect(r, &dim, tiny_skia::Transform::identity(), None);
+            }
+            let min_x = sx.min(cx);
+            let min_y = sy.min(cy);
+            let max_x = sx.max(cx);
+            let max_y = sy.max(cy);
+            let hole_x0 = min_x.max(rx as f32);
+            let hole_y0 = min_y.max(ry as f32);
+            let hole_x1 = max_x.min((rx + rw) as f32);
+            let hole_y1 = max_y.min((ry + rh) as f32);
+            if hole_x1 > hole_x0 && hole_y1 > hole_y0 {
+                let hx = hole_x0 as u32;
+                let hy = hole_y0 as u32;
+                let hw = (hole_x1 - hole_x0) as u32;
+                let hh = (hole_y1 - hole_y0) as u32;
+                for row in 0..hh {
+                    let src_start = ((hy + row) * w + hx) as usize * 4;
+                    let len = hw as usize * 4;
+                    active.data_mut()[src_start..src_start + len]
+                        .copy_from_slice(&base.data()[src_start..src_start + len]);
+                }
+            }
+            crate::core::export::render_crop_selection_ex(
+                active,
+                sx,
+                sy,
+                cx - sx,
+                cy - sy,
+                self.scale_factor,
+                false,
+            );
         }
 
         if let Some(ref toast) = self.toast_notification {
@@ -228,23 +301,25 @@ impl X11Backend {
             }
         }
 
-        // PERFORMANCE: RGBA->BGRA swizzle using chunks_exact instead of individual byte assignments.
-        // chunks_exact enables SIMD auto-vectorization by the compiler.
-        let src = active.data();
-        let mut sub_pixels = vec![0u8; (rw * rh * 4) as usize];
-
-        for row in 0..rh {
-            let src_row_start = ((ry + row) * w + rx) as usize * 4;
-            let dst_row_start = (row * rw) as usize * 4;
-
-            let src_row = &src[src_row_start..src_row_start + rw as usize * 4];
-            let dst_row = &mut sub_pixels[dst_row_start..dst_row_start + rw as usize * 4];
-
-            for (src_px, dst_px) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
-                dst_px[0] = src_px[2]; // B <- R
-                dst_px[1] = src_px[1]; // G
-                dst_px[2] = src_px[0]; // R <- B
-                dst_px[3] = src_px[3]; // A
+        // PERFORMANCE: RGBA->BGRA into the reusable x11_pixels scratch (no per-frame alloc).
+        let needed = (rw * rh * 4) as usize;
+        if self.x11_pixels.len() < needed {
+            self.x11_pixels.resize(needed, 0);
+        }
+        {
+            let src = active.data();
+            let dst = &mut self.x11_pixels[..needed];
+            for row in 0..rh {
+                let src_row_start = ((ry + row) * w + rx) as usize * 4;
+                let dst_row_start = (row * rw) as usize * 4;
+                let src_row = &src[src_row_start..src_row_start + rw as usize * 4];
+                let dst_row = &mut dst[dst_row_start..dst_row_start + rw as usize * 4];
+                for (src_px, dst_px) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                    dst_px[0] = src_px[2];
+                    dst_px[1] = src_px[1];
+                    dst_px[2] = src_px[0];
+                    dst_px[3] = src_px[3];
+                }
             }
         }
 
@@ -258,7 +333,122 @@ impl X11Backend {
             ry as i16,
             0,
             32,
-            &sub_pixels,
+            &self.x11_pixels[..needed],
+        )?;
+        conn.flush()?;
+        Ok(())
+    }
+
+    fn ensure_crop_veil(&mut self, w: u32, h: u32) {
+        let needs = match self.crop_veil.as_ref() {
+            Some(v) => v.width() != w || v.height() != h,
+            None => true,
+        };
+        if !needs {
+            return;
+        }
+        let mut veil = tiny_skia::Pixmap::new(w, h).unwrap();
+        veil.fill(tiny_skia::Color::TRANSPARENT);
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 55));
+        if let Some(r) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
+            veil.fill_rect(r, &paint, tiny_skia::Transform::identity(), None);
+        }
+        self.crop_veil = Some(veil);
+    }
+
+    /// Tray region-capture present path: only touch the dirty rect.
+    fn redraw_tray_quick_crop(
+        &mut self,
+        conn: &impl Connection,
+        win_id: u32,
+        gc_id: u32,
+        rx: u32,
+        ry: u32,
+        rw: u32,
+        rh: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let w = self.width as u32;
+        let h = self.height as u32;
+        self.ensure_crop_veil(w, h);
+
+        let active = self.active_pixmap.as_mut().unwrap();
+        let veil = self.crop_veil.as_ref().unwrap();
+
+        // Restore veil into dirty region.
+        for row in 0..rh {
+            let start = ((ry + row) * w + rx) as usize * 4;
+            let len = rw as usize * 4;
+            active.data_mut()[start..start + len]
+                .copy_from_slice(&veil.data()[start..start + len]);
+        }
+
+        if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
+            let min_x = sx.min(cx);
+            let min_y = sy.min(cy);
+            let max_x = sx.max(cx);
+            let max_y = sy.max(cy);
+            // Punch transparent hole where the desktop should show through.
+            let hole_x0 = min_x.max(rx as f32);
+            let hole_y0 = min_y.max(ry as f32);
+            let hole_x1 = max_x.min((rx + rw) as f32);
+            let hole_y1 = max_y.min((ry + rh) as f32);
+            if hole_x1 > hole_x0 && hole_y1 > hole_y0 {
+                if let Some(r) = tiny_skia::Rect::from_xywh(
+                    hole_x0,
+                    hole_y0,
+                    hole_x1 - hole_x0,
+                    hole_y1 - hole_y0,
+                ) {
+                    let mut clear = tiny_skia::Paint::default();
+                    clear.set_color(tiny_skia::Color::TRANSPARENT);
+                    clear.blend_mode = tiny_skia::BlendMode::Source;
+                    active.fill_rect(r, &clear, tiny_skia::Transform::identity(), None);
+                }
+            }
+            crate::core::export::render_crop_selection_ex(
+                active,
+                sx,
+                sy,
+                cx - sx,
+                cy - sy,
+                self.scale_factor,
+                false,
+            );
+        }
+
+        let needed = (rw * rh * 4) as usize;
+        if self.x11_pixels.len() < needed {
+            self.x11_pixels.resize(needed, 0);
+        }
+        {
+            let src = active.data();
+            let dst = &mut self.x11_pixels[..needed];
+            for row in 0..rh {
+                let src_row_start = ((ry + row) * w + rx) as usize * 4;
+                let dst_row_start = (row * rw) as usize * 4;
+                let src_row = &src[src_row_start..src_row_start + rw as usize * 4];
+                let dst_row = &mut dst[dst_row_start..dst_row_start + rw as usize * 4];
+                for (src_px, dst_px) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                    dst_px[0] = src_px[2];
+                    dst_px[1] = src_px[1];
+                    dst_px[2] = src_px[0];
+                    dst_px[3] = src_px[3];
+                }
+            }
+        }
+
+        conn.put_image(
+            ImageFormat::Z_PIXMAP,
+            win_id,
+            gc_id,
+            rw as u16,
+            rh as u16,
+            rx as i16,
+            ry as i16,
+            0,
+            32,
+            &self.x11_pixels[..needed],
         )?;
         conn.flush()?;
         Ok(())
