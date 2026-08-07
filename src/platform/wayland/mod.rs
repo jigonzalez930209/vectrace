@@ -812,7 +812,7 @@ fn trigger_wayland_save_full(
         };
 
         for stroke in &doc.strokes {
-            crate::core::canvas::render_stroke(stroke, &mut temp_pixmap);
+            crate::core::render::render_stroke(stroke, &mut temp_pixmap);
         }
 
         match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
