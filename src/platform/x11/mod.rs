@@ -160,10 +160,18 @@ impl PlatformBackend for X11Backend {
         let keycode_to_keysym = |keycode: u8, state: u16| -> u32 {
             if keycode < min_keycode || keycode > max_keycode { return 0; }
             let base_idx = ((keycode - min_keycode) as usize) * keysyms_per_keycode;
-            let is_shift = (state & 0x0001) != 0;
-            let offset = if is_shift && keysyms_per_keycode > 1 { 1 } else { 0 };
+            let is_shift = (state & 0x0001) != 0; // ShiftMask
+            let is_lock  = (state & 0x0002) != 0; // LockMask (CapsLock)
+            let use_second_sym = is_shift ^ is_lock;
+            let offset = if use_second_sym && keysyms_per_keycode > 1 { 1 } else { 0 };
             let idx = base_idx + offset;
-            if idx < keyboard_mapping.keysyms.len() { keyboard_mapping.keysyms[idx] } else { 0 }
+            if idx < keyboard_mapping.keysyms.len() && keyboard_mapping.keysyms[idx] != 0 {
+                keyboard_mapping.keysyms[idx]
+            } else if base_idx < keyboard_mapping.keysyms.len() {
+                keyboard_mapping.keysyms[base_idx]
+            } else {
+                0
+            }
         };
 
         let mut keycode_a = 0u8;

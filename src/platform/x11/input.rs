@@ -39,11 +39,15 @@ impl X11Backend {
                     self.drag_offset_x = click_x - toolbar.x;
                     self.drag_offset_y = click_y - toolbar.y;
                 }
-                ToolbarAction::SelectTool(tool) => {
+                ToolbarAction::SelectTool(mut tool) => {
                     if !matches!(tool, Tool::SelectRegion) {
                         self.crop_start = None;
                         self.crop_current = None;
                         self.crop_drag_state = CropDragState::None;
+                    }
+                    // Preserve active color when switching tools
+                    if let Some(c) = self.active_tool.color() {
+                        tool.set_color(c);
                     }
                     self.active_tool = tool;
                     self.show_color_menu = false;
@@ -55,7 +59,11 @@ impl X11Backend {
                     self.crop_start = None;
                     self.crop_current = None;
                     self.crop_drag_state = CropDragState::None;
-                    self.active_tool = Tool::default_shape(kind);
+                    let mut shape_tool = Tool::default_shape(kind);
+                    if let Some(c) = self.active_tool.color() {
+                        shape_tool.set_color(c);
+                    }
+                    self.active_tool = shape_tool;
                     self.show_color_menu = false;
                 }
                 ToolbarAction::SetColor(color) => {
@@ -267,6 +275,15 @@ impl X11Backend {
                 let dirty_rect = get_dirty_rect(canvas, self.width, self.height, None, None);
                 self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, dirty_rect)?;
             }
+        } else {
+            self.mouse_pos = (move_x, move_y);
+            let has_crop_selection = self.crop_start.is_some() && self.crop_current.is_some();
+            let new_tip = toolbar.tooltip_for_hover(move_x, move_y, has_crop_selection)
+                .map(|(t, _)| t.to_string());
+            if self.hover_tooltip != new_tip {
+                self.hover_tooltip = new_tip;
+                self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            }
         }
         Ok(())
     }
@@ -344,6 +361,8 @@ impl X11Backend {
         const XK_K_UPPER: u32 = 0x004b;
         const XK_O_LOWER: u32 = 0x006f;
         const XK_O_UPPER: u32 = 0x004f;
+        const XK_N_LOWER: u32 = 0x006e;
+        const XK_N_UPPER: u32 = 0x004e;
         const XK_M_LOWER: u32 = 0x006d;
         const XK_M_UPPER: u32 = 0x004d;
 
@@ -407,19 +426,27 @@ impl X11Backend {
                     }
                 }
                 XK_P_LOWER | XK_P_UPPER => {
-                    self.active_tool = Tool::default_pen();
+                    let mut tool = Tool::default_pen();
+                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                    self.active_tool = tool;
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_H_LOWER | XK_H_UPPER => {
-                    self.active_tool = Tool::default_highlighter();
+                    let mut tool = Tool::default_highlighter();
+                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                    self.active_tool = tool;
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_L_LOWER | XK_L_UPPER => {
-                    self.active_tool = Tool::default_shape(crate::core::ShapeKind::Line);
+                    let mut tool = Tool::default_shape(crate::core::ShapeKind::Line);
+                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                    self.active_tool = tool;
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_A_LOWER | XK_A_UPPER => {
-                    self.active_tool = Tool::default_shape(crate::core::ShapeKind::Arrow);
+                    let mut tool = Tool::default_shape(crate::core::ShapeKind::Arrow);
+                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                    self.active_tool = tool;
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_E_LOWER | XK_E_UPPER => {
@@ -427,7 +454,9 @@ impl X11Backend {
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_T_LOWER | XK_T_UPPER => {
-                    self.active_tool = Tool::default_text();
+                    let mut tool = Tool::default_text();
+                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                    self.active_tool = tool;
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_K_LOWER | XK_K_UPPER => {
@@ -435,6 +464,12 @@ impl X11Backend {
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }
                 XK_O_LOWER | XK_O_UPPER => {
+                    let mut tool = Tool::default_shape(crate::core::ShapeKind::Oval);
+                    if let Some(c) = self.active_tool.color() { tool.set_color(c); }
+                    self.active_tool = tool;
+                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                }
+                XK_N_LOWER | XK_N_UPPER => {
                     self.active_tool = Tool::default_spotlight();
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
                 }

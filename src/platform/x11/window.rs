@@ -76,12 +76,6 @@ pub fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
             );
         }
     }
-
-    if let Ok(reply) = conn.grab_keyboard(false, win_id, Time::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC) {
-        if let Ok(res) = reply.reply() {
-            println!("Focused & Grabbed Keyboard (Status: {:?})", res.status);
-        }
-    }
     let _ = conn.flush();
 }
 

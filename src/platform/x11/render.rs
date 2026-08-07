@@ -196,6 +196,10 @@ impl X11Backend {
         }
 
         let has_crop_selection = self.crop_start.is_some() && self.crop_current.is_some();
+        let hover_tooltip = self.hover_tooltip.as_deref().and_then(|tip| {
+            toolbar.tooltip_for_hover(self.mouse_pos.0, self.mouse_pos.1, has_crop_selection)
+                .map(|(_, pos)| (tip, pos))
+        });
         if !self.is_hidden {
             toolbar.draw(
                 active,
@@ -206,6 +210,7 @@ impl X11Backend {
                 self.show_color_menu,
                 self.monitor_mode,
                 has_crop_selection,
+                hover_tooltip,
             );
         } else {
             active.fill(tiny_skia::Color::TRANSPARENT);

@@ -37,6 +37,8 @@ pub struct X11Backend {
     pub crop_start: Option<(f32, f32)>,
     pub crop_current: Option<(f32, f32)>,
     pub crop_drag_state: CropDragState,
+    pub hover_tooltip: Option<String>,
+    pub mouse_pos: (f32, f32),
 }
 
 impl X11Backend {
@@ -67,6 +69,8 @@ impl X11Backend {
             crop_start: None,
             crop_current: None,
             crop_drag_state: CropDragState::None,
+            hover_tooltip: None,
+            mouse_pos: (0.0, 0.0),
         }
     }
 
@@ -266,8 +270,8 @@ impl X11Backend {
                 rects.push(Rectangle {
                     x: menu_x as i16,
                     y: menu_y as i16,
-                    width: (250.0 * toolbar.scale_factor) as u16,
-                    height: (135.0 * toolbar.scale_factor) as u16,
+                    width: (260.0 * toolbar.scale_factor) as u16,
+                    height: (130.0 * toolbar.scale_factor) as u16,
                 });
             }
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &rects)?;
