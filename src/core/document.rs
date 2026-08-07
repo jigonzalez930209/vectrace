@@ -1,4 +1,5 @@
-use crate::core::canvas::{BackgroundMode, Canvas, Stroke, StrokeType, render_stroke};
+use crate::core::canvas::{BackgroundMode, Canvas, Stroke, StrokeType};
+use crate::core::render::render_stroke;
 use tiny_skia::Pixmap;
 
 /// An immutable, point-in-time snapshot of the vector document for rendering and export.
