@@ -87,7 +87,17 @@ impl ScreenCaptureBackend for WaylandPortalBackend {
                 Ok(session_id)
             }
             Err(err) => {
-                if restore_token.is_some() && err.kind != CaptureErrorKind::UserCancelled {
+                // Only clear + interactive retry when restore was explicitly rejected.
+                let invalid_restore = matches!(
+                    err.kind,
+                    CaptureErrorKind::PermissionDenied | CaptureErrorKind::UserCancelled
+                ) && restore_token.is_some();
+
+                if invalid_restore {
+                    println!(
+                        "Restore token rejected ({:?}); clearing and retrying interactively...",
+                        err.kind
+                    );
                     self.restore_storage.clear_token();
                     let retry_res = self
                         .portal_client

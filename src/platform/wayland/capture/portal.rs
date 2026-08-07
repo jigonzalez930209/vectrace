@@ -1,20 +1,27 @@
+use crate::snapshot::composition::CompositionEngine;
 use crate::snapshot::error::{CaptureError, CaptureErrorKind};
 use crate::snapshot::request::{CaptureRequest, CaptureTarget, CursorPolicy};
 use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
+use ashpd::desktop::screenshot::Screenshot;
 use ashpd::desktop::PersistMode;
 use std::os::fd::OwnedFd;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
 static PORTAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
-fn get_portal_runtime() -> &'static Runtime {
+pub(crate) fn portal_runtime() -> &'static Runtime {
     PORTAL_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("Failed to create persistent Tokio runtime for PortalClient")
     })
+}
+
+fn get_portal_runtime() -> &'static Runtime {
+    portal_runtime()
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +80,22 @@ impl PortalClient {
                 CursorPolicy::Metadata => CursorMode::Metadata,
             };
 
-            let multiple = request.target == CaptureTarget::AllMonitors;
-            let persist = PersistMode::Application;
+            let multiple = matches!(
+                request.target,
+                CaptureTarget::AllMonitors
+            );
+            // ExplicitlyRevoked: restore token survives app restarts until the
+            // user revokes it in system settings. Application(=transient) only
+            // lasts while the process is alive — that caused a picker on every launch.
+            let persist = PersistMode::ExplicitlyRevoked;
+
+            let token_note = restore_token
+                .map(|t| format!("yes ({} chars)", t.len()))
+                .unwrap_or_else(|| "no".into());
+            println!(
+                "XDG ScreenCast SelectSources: restore_token={}, persist=ExplicitlyRevoked, multiple={}",
+                token_note, multiple
+            );
 
             proxy
                 .select_sources(
@@ -152,54 +173,192 @@ impl PortalClient {
     }
 
     pub fn take_screenshot() -> Result<tiny_skia::Pixmap, CaptureError> {
+        Self::take_screenshot_with_path().map(|(pixmap, _)| pixmap)
+    }
+
+    /// Same capture chain as [`Self::take_screenshot`], but reports which path won.
+    pub fn take_screenshot_with_path() -> Result<
+        (
+            tiny_skia::Pixmap,
+            crate::platform::wayland::capture::probe::CapturePathUsed,
+        ),
+        CaptureError,
+    > {
+        use crate::platform::wayland::capture::probe::CapturePathUsed;
+
+        // 1) Mutter ScreenCast: true 0-flash / no camera sound on GNOME.
+        match crate::platform::wayland::capture::mutter::capture_desktop() {
+            Ok(pixmap) => return Ok((pixmap, CapturePathUsed::MutterScreenCast)),
+            Err(e) => {
+                println!(
+                    "Mutter ScreenCast unavailable ({:?}); trying XDG ScreenCast...",
+                    e
+                );
+            }
+        }
+
+        // 2) XDG ScreenCast + restore token (still 0-flash; picker only without token).
+        match Self::take_screencast_frame() {
+            Ok(pixmap) => return Ok((pixmap, CapturePathUsed::XdgScreenCast)),
+            Err(e) => {
+                println!("XDG ScreenCast failed: {:?}", e);
+            }
+        }
+
+        // 3) Screenshot portal flashes on GNOME — only if explicitly allowed.
+        if std::env::var_os("VECTRACE_ALLOW_FLASH").is_some() {
+            println!("VECTRACE_ALLOW_FLASH set; using Screenshot portal (will flash)...");
+            let pixmap = Self::take_portal_screenshot()?;
+            return Ok((pixmap, CapturePathUsed::ScreenshotFlash));
+        }
+
+        Err(CaptureError::new(
+            CaptureErrorKind::PortalUnavailable,
+            "Capture failed (flash path disabled)",
+        ))
+    }
+
+    fn take_screencast_frame() -> Result<tiny_skia::Pixmap, CaptureError> {
         let storage = crate::platform::wayland::capture::RestoreTokenStorage::new();
         let restore_token = storage.load_token();
+        if let Some(ref t) = restore_token {
+            println!(
+                "Loaded portal restore token from {} ({} chars)",
+                crate::platform::wayland::capture::RestoreTokenStorage::default_path().display(),
+                t.len()
+            );
+        } else {
+            println!(
+                "No portal restore token at {} — first grant may show a Share dialog",
+                crate::platform::wayland::capture::RestoreTokenStorage::default_path().display()
+            );
+        }
 
         let req = CaptureRequest {
-            target: CaptureTarget::PrimaryMonitor,
+            // Match a typical “entire screen” grant so restore tokens apply.
+            target: CaptureTarget::AllMonitors,
             cursor: CursorPolicy::Hidden,
             ..Default::default()
         };
 
         let mut client = PortalClient::new();
-        match client.start_screencast_session(&req, restore_token.as_deref()) {
-            Ok(res) => {
-                if let Some(ref new_token) = res.restore_token {
-                    storage.save_token(new_token);
-                }
+        let res = match client.start_screencast_session(&req, restore_token.as_deref()) {
+            Ok(r) => r,
+            Err(e) => {
+                // Only drop the token when the portal explicitly rejects restore.
+                // Transient PipeWire/timeouts must NOT clear the token and force a picker.
+                let invalid_restore = matches!(
+                    e.kind,
+                    CaptureErrorKind::PermissionDenied | CaptureErrorKind::UserCancelled
+                ) && restore_token.is_some();
 
-                if let Some(stream) = res.streams.first() {
-                    let node_id = stream.node_id;
-                    let (w, h) = (stream.width.unwrap_or(1920), stream.height.unwrap_or(1080));
-                    let mut reader = crate::platform::wayland::capture::pipewire::PipeWireStreamReader::new(res.pipewire_fd, node_id);
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                    match reader.acquire_frame(deadline, w, h, crate::snapshot::frame::CapturePixelFormat::Rgba8888) {
-                        Ok(frame) => {
-                            if let crate::snapshot::frame::FrameMemory::Owned(bytes) = frame.memory {
-                                let expected_len = (w * h * 4) as usize;
-                                if bytes.len() >= expected_len {
-                                    if let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) {
-                                        pixmap.data_mut().copy_from_slice(&bytes[..expected_len]);
-                                        println!("Captured real desktop background frame via 0-flash ScreenCast PipeWire stream ({}x{})!", w, h);
-                                        return Ok(pixmap);
-                                    }
-                                } else {
-                                    println!("PipeWire frame buffer size mismatch: got {}, expected {}", bytes.len(), expected_len);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!("PipeWire acquire_frame error: {:?}", e);
-                        }
-                    }
+                if invalid_restore {
+                    println!(
+                        "Restore token rejected ({:?}); clearing and retrying interactively...",
+                        e.kind
+                    );
+                    storage.clear_token();
+                    client.start_screencast_session(&req, None)?
+                } else {
+                    return Err(e);
                 }
             }
-            Err(e) => {
-                println!("ScreenCast portal start_screencast_session error: {:?}", e);
+        };
+
+        if let Some(ref new_token) = res.restore_token {
+            if storage.save_token(new_token) {
+                println!("Saved portal restore token ({} chars)", new_token.len());
             }
         }
 
-        Err(CaptureError::new(CaptureErrorKind::PortalUnavailable, "ScreenCast PipeWire stream unavailable"))
+        let stream = res.streams.first().ok_or_else(|| {
+            CaptureError::new(
+                CaptureErrorKind::InvalidPortalResponse,
+                "ScreenCast portal returned zero streams",
+            )
+        })?;
+
+        let node_id = stream.node_id;
+        let hint_w = stream.width.unwrap_or(1920).max(1);
+        let hint_h = stream.height.unwrap_or(1080).max(1);
+        let mut reader =
+            crate::platform::wayland::capture::pipewire::PipeWireStreamReader::new(
+                res.pipewire_fd,
+                node_id,
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let frame = reader.acquire_frame(
+            deadline,
+            hint_w,
+            hint_h,
+            crate::snapshot::frame::CapturePixelFormat::Bgrx8888,
+        )?;
+
+        let rgba = CompositionEngine::normalize_frame(&frame)?;
+        let w = frame.width;
+        let h = frame.height;
+        let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or_else(|| {
+            CaptureError::new(
+                CaptureErrorKind::Internal,
+                format!("Failed to allocate pixmap {}x{}", w, h),
+            )
+        })?;
+        pixmap.data_mut().copy_from_slice(&rgba);
+        println!(
+            "Captured desktop via XDG ScreenCast PipeWire ({}x{})!",
+            w, h
+        );
+        Ok(pixmap)
+    }
+
+    fn take_portal_screenshot() -> Result<tiny_skia::Pixmap, CaptureError> {
+        let rt = get_portal_runtime();
+        let path: PathBuf = rt.block_on(async {
+            let response = Screenshot::request()
+                .interactive(false)
+                .modal(false)
+                .send()
+                .await
+                .map_err(|e| {
+                    CaptureError::new(
+                        CaptureErrorKind::PortalUnavailable,
+                        format!("Screenshot portal request failed: {}", e),
+                    )
+                })?
+                .response()
+                .map_err(|e| {
+                    CaptureError::new(
+                        CaptureErrorKind::PermissionDenied,
+                        format!("Screenshot portal denied: {}", e),
+                    )
+                })?;
+
+            let uri = response.uri();
+            uri.to_file_path().map_err(|_| {
+                CaptureError::new(
+                    CaptureErrorKind::InvalidPortalResponse,
+                    format!("Screenshot portal returned non-file URI: {}", uri),
+                )
+            })
+        })?;
+
+        let pixmap = tiny_skia::Pixmap::load_png(&path).map_err(|e| {
+            CaptureError::new(
+                CaptureErrorKind::Io,
+                format!(
+                    "Failed to load Screenshot portal PNG {}: {}",
+                    path.display(),
+                    e
+                ),
+            )
+        })?;
+
+        println!(
+            "Captured desktop via Screenshot portal ({}x{}) — flash path!",
+            pixmap.width(),
+            pixmap.height()
+        );
+        Ok(pixmap)
     }
 }
 

@@ -10,10 +10,11 @@ pub enum SpaVideoFormat {
 }
 
 impl SpaVideoFormat {
-    pub const SPA_VIDEO_FORMAT_BGRA: u32 = 6;
-    pub const SPA_VIDEO_FORMAT_BGRX: u32 = 7;
-    pub const SPA_VIDEO_FORMAT_RGBA: u32 = 12;
-    pub const SPA_VIDEO_FORMAT_RGBX: u32 = 14;
+    // Values match spa_video_format in spa/param/video/raw.h
+    pub const SPA_VIDEO_FORMAT_RGBX: u32 = 7;
+    pub const SPA_VIDEO_FORMAT_BGRX: u32 = 8;
+    pub const SPA_VIDEO_FORMAT_RGBA: u32 = 11;
+    pub const SPA_VIDEO_FORMAT_BGRA: u32 = 12;
 
     pub fn from_spa_id(id: u32) -> Self {
         match id {
