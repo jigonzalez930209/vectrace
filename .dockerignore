@@ -1,0 +1,6 @@
+# Keep Docker build context small and reproducible.
+target
+.git
+e2e/reports
+**/*.AppImage
+**/node_modules
