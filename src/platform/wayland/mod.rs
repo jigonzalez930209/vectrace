@@ -493,11 +493,49 @@ impl PlatformBackend for WaylandBackend {
                             println!("System Tray Action: Clear Canvas");
                         }
                         TrayEvent::SaveFull => {
-                            trigger_wayland_save_full(canvas, state.width as u32, state.height as u32, &surface, &wl_buf, &mut event_queue, &mut state);
+                            trigger_wayland_save_full(
+                                canvas,
+                                state.width as u32,
+                                state.height as u32,
+                                &surface,
+                                &wl_buf,
+                                &mut event_queue,
+                                &mut state,
+                                self.is_hidden,
+                            );
+                            // Restore click-through / empty input region after capture reattach.
+                            apply_wayland_passthrough(
+                                &compositor,
+                                &surface,
+                                state.layer_surface.as_ref(),
+                                state.xdg_toplevel.as_ref(),
+                                self.passthrough,
+                                self.show_settings_menu,
+                                self.show_color_menu,
+                                &toolbar,
+                                &qh,
+                            );
                         }
                         TrayEvent::SaveRegion => {
+                            // Quick region: interactive overlay without toolbar (X11-style UX).
+                            // Native Wayland crop drag is limited; restore for selection when possible.
+                            self.is_hidden = false;
+                            self.passthrough = false;
+                            self.show_settings_menu = false;
+                            self.show_color_menu = false;
                             self.active_tool = Tool::default_select_region();
-                            println!("System Tray Action: Select Region Crop Tool");
+                            apply_wayland_passthrough(
+                                &compositor,
+                                &surface,
+                                state.layer_surface.as_ref(),
+                                state.xdg_toplevel.as_ref(),
+                                self.passthrough,
+                                self.show_settings_menu,
+                                self.show_color_menu,
+                                &toolbar,
+                                &qh,
+                            );
+                            println!("System Tray Action: Region crop (overlay without menus) — use X11 path for drag-release capture");
                         }
                         TrayEvent::Exit => {
                             println!("System Tray Action: Exit application");
@@ -555,7 +593,27 @@ impl PlatformBackend for WaylandBackend {
                             println!("Canvas cleared");
                         }
                         ToolbarAction::SaveFull => {
-                            trigger_wayland_save_full(canvas, state.width as u32, state.height as u32, &surface, &wl_buf, &mut event_queue, &mut state);
+                            trigger_wayland_save_full(
+                                canvas,
+                                state.width as u32,
+                                state.height as u32,
+                                &surface,
+                                &wl_buf,
+                                &mut event_queue,
+                                &mut state,
+                                self.is_hidden,
+                            );
+                            apply_wayland_passthrough(
+                                &compositor,
+                                &surface,
+                                state.layer_surface.as_ref(),
+                                state.xdg_toplevel.as_ref(),
+                                self.passthrough,
+                                self.show_settings_menu,
+                                self.show_color_menu,
+                                &toolbar,
+                                &qh,
+                            );
                         }
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
@@ -748,7 +806,27 @@ impl PlatformBackend for WaylandBackend {
                                 println!("Tool: Text");
                             }
                             31 => { // S - Save Full
-                                trigger_wayland_save_full(canvas, state.width as u32, state.height as u32, &surface, &wl_buf, &mut event_queue, &mut state);
+                                trigger_wayland_save_full(
+                                    canvas,
+                                    state.width as u32,
+                                    state.height as u32,
+                                    &surface,
+                                    &wl_buf,
+                                    &mut event_queue,
+                                    &mut state,
+                                    self.is_hidden,
+                                );
+                                apply_wayland_passthrough(
+                                    &compositor,
+                                    &surface,
+                                    state.layer_surface.as_ref(),
+                                    state.xdg_toplevel.as_ref(),
+                                    self.passthrough,
+                                    self.show_settings_menu,
+                                    self.show_color_menu,
+                                    &toolbar,
+                                    &qh,
+                                );
                             }
                             50 => { // M - Minimize
                                 self.is_hidden = true;
@@ -780,20 +858,25 @@ impl PlatformBackend for WaylandBackend {
                 }
             }
 
-            canvas.render_background(&mut base_pixmap);
-            canvas.render_completed_strokes(&mut base_pixmap);
-            canvas.render_current_stroke(&mut base_pixmap);
-            toolbar.draw(
-                &mut base_pixmap,
-                self.active_tool,
-                self.passthrough,
-                canvas.background_mode,
-                self.show_settings_menu,
-                self.show_color_menu,
-                self.monitor_mode,
-                false,
-                None,
-            );
+            if self.is_hidden {
+                // Keep tray-minimized surface empty + non-interactive.
+                base_pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            } else {
+                canvas.render_background(&mut base_pixmap);
+                canvas.render_completed_strokes(&mut base_pixmap);
+                canvas.render_current_stroke(&mut base_pixmap);
+                toolbar.draw(
+                    &mut base_pixmap,
+                    self.active_tool,
+                    self.passthrough,
+                    canvas.background_mode,
+                    self.show_settings_menu,
+                    self.show_color_menu,
+                    self.monitor_mode,
+                    false,
+                    None,
+                );
+            }
 
 
             let shm_slice = unsafe {
@@ -810,7 +893,11 @@ impl PlatformBackend for WaylandBackend {
             }
 
 
-            surface.attach(Some(&wl_buf), 0, 0);
+            if self.is_hidden {
+                surface.attach(None, 0, 0);
+            } else {
+                surface.attach(Some(&wl_buf), 0, 0);
+            }
             surface.damage_buffer(0, 0, width as i32, height as i32);
             surface.commit();
 
@@ -883,21 +970,27 @@ fn trigger_wayland_save_full(
     wl_buf: &wl_buffer::WlBuffer,
     event_queue: &mut wayland_client::EventQueue<WaylandState>,
     state: &mut WaylandState,
+    stay_hidden: bool,
 ) {
     if width == 0 || height == 0 { return; }
 
     let bg_mode = canvas.background_mode;
     let doc = canvas.snapshot();
 
+    // Temporarily detach so ScreenCast/portal does not capture the overlay.
     surface.attach(None, 0, 0);
     surface.commit();
     let _ = event_queue.roundtrip(state);
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    surface.attach(Some(wl_buf), 0, 0);
-    surface.damage(0, 0, width as i32, height as i32);
-    surface.commit();
-    let _ = event_queue.roundtrip(state);
+    // If the user minimized to tray, keep the surface buffer-less so we do not
+    // resurrect a fullscreen overlay that blocks the desktop.
+    if !stay_hidden {
+        surface.attach(Some(wl_buf), 0, 0);
+        surface.damage(0, 0, width as i32, height as i32);
+        surface.commit();
+        let _ = event_queue.roundtrip(state);
+    }
 
     std::thread::spawn(move || {
         let captured = if bg_mode == crate::core::BackgroundMode::Transparent {
@@ -906,24 +999,16 @@ fn trigger_wayland_save_full(
             None
         };
 
-        let mut temp_pixmap = match captured {
+        let desktop = match captured {
             Some(Ok(desktop_pixmap)) => {
                 println!(
-                    "Captured desktop background ({}x{})!",
+                    "Captured desktop background ({}x{})! overlay was {}x{}",
                     desktop_pixmap.width(),
-                    desktop_pixmap.height()
+                    desktop_pixmap.height(),
+                    width,
+                    height
                 );
-                if desktop_pixmap.width() == width && desktop_pixmap.height() == height {
-                    desktop_pixmap
-                } else {
-                    let mut scaled = tiny_skia::Pixmap::new(width, height).unwrap();
-                    let scale_x = width as f32 / desktop_pixmap.width() as f32;
-                    let scale_y = height as f32 / desktop_pixmap.height() as f32;
-                    let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
-                    let paint = tiny_skia::PixmapPaint::default();
-                    scaled.draw_pixmap(0, 0, desktop_pixmap.as_ref(), &paint, transform, None);
-                    scaled
-                }
+                Some(desktop_pixmap)
             }
             Some(Err(e)) => {
                 println!(
@@ -932,23 +1017,35 @@ fn trigger_wayland_save_full(
                 );
                 return;
             }
-            None => {
-                let mut pixmap = tiny_skia::Pixmap::new(width, height).unwrap();
-                doc.render_background(&mut pixmap);
-                pixmap
-            }
+            None => None,
         };
 
-        for stroke in &doc.strokes {
-            crate::core::render::render_stroke(stroke, &mut temp_pixmap);
-        }
+        let temp_pixmap = crate::core::compose_desktop_with_strokes(
+            desktop,
+            &doc.strokes,
+            width,
+            height,
+            0,
+            0,
+            |pixmap| doc.render_background(pixmap),
+        );
 
         match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
             Ok((path, copied)) => {
                 if copied {
-                    println!("Saved Full Screen and copied to clipboard: {}", path);
+                    println!(
+                        "Saved Full Screen {}x{} and copied to clipboard: {}",
+                        temp_pixmap.width(),
+                        temp_pixmap.height(),
+                        path
+                    );
                 } else {
-                    println!("Saved Full Screen image to: {} (clipboard copy failed)", path);
+                    println!(
+                        "Saved Full Screen {}x{} to: {} (clipboard copy failed)",
+                        temp_pixmap.width(),
+                        temp_pixmap.height(),
+                        path
+                    );
                 }
             }
             Err(err) => println!("Failed to save image file: {}", err),

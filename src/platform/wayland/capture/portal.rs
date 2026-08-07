@@ -271,44 +271,81 @@ impl PortalClient {
             }
         }
 
-        let stream = res.streams.first().ok_or_else(|| {
-            CaptureError::new(
+        let pipewire_fd = res.pipewire_fd;
+        if res.streams.is_empty() {
+            return Err(CaptureError::new(
                 CaptureErrorKind::InvalidPortalResponse,
                 "ScreenCast portal returned zero streams",
-            )
-        })?;
+            ));
+        }
 
-        let node_id = stream.node_id;
-        let hint_w = stream.width.unwrap_or(1920).max(1);
-        let hint_h = stream.height.unwrap_or(1080).max(1);
-        let mut reader =
-            crate::platform::wayland::capture::pipewire::PipeWireStreamReader::new(
-                res.pipewire_fd,
-                node_id,
-            );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let frame = reader.acquire_frame(
-            deadline,
-            hint_w,
-            hint_h,
-            crate::snapshot::frame::CapturePixelFormat::Bgrx8888,
-        )?;
-
-        let rgba = CompositionEngine::normalize_frame(&frame)?;
-        let w = frame.width;
-        let h = frame.height;
-        let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or_else(|| {
-            CaptureError::new(
-                CaptureErrorKind::Internal,
-                format!("Failed to allocate pixmap {}x{}", w, h),
-            )
-        })?;
-        pixmap.data_mut().copy_from_slice(&rgba);
         println!(
-            "Captured desktop via XDG ScreenCast PipeWire ({}x{})!",
-            w, h
+            "XDG ScreenCast: {} stream(s) — capturing all for stitch",
+            res.streams.len()
         );
-        Ok(pixmap)
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut tiles: Vec<(i32, i32, tiny_skia::Pixmap)> = Vec::with_capacity(res.streams.len());
+
+        for (idx, stream) in res.streams.iter().enumerate() {
+            let fd = pipewire_fd.try_clone().map_err(|e| {
+                CaptureError::new(
+                    CaptureErrorKind::PipeWireUnavailable,
+                    format!("Failed to dup PipeWire FD: {}", e),
+                )
+            })?;
+            let hint_w = stream.width.unwrap_or(1920).max(1);
+            let hint_h = stream.height.unwrap_or(1080).max(1);
+            let mut reader =
+                crate::platform::wayland::capture::pipewire::PipeWireStreamReader::new(
+                    fd,
+                    stream.node_id,
+                );
+            let frame = reader.acquire_frame(
+                deadline,
+                hint_w,
+                hint_h,
+                crate::snapshot::frame::CapturePixelFormat::Bgrx8888,
+            )?;
+            let rgba = CompositionEngine::normalize_frame(&frame)?;
+            let mut pixmap = tiny_skia::Pixmap::new(frame.width, frame.height).ok_or_else(|| {
+                CaptureError::new(
+                    CaptureErrorKind::Internal,
+                    format!("Failed to allocate pixmap {}x{}", frame.width, frame.height),
+                )
+            })?;
+            pixmap.data_mut().copy_from_slice(&rgba);
+
+            let x = stream.position_x.unwrap_or(0);
+            let y = stream.position_y.unwrap_or(0);
+            // If the portal omitted positions, place monitors left-to-right.
+            let (x, y) = if stream.position_x.is_none() && stream.position_y.is_none() {
+                let x_off = tiles.iter().map(|(_, _, pm)| pm.width() as i32).sum::<i32>();
+                (x_off, 0)
+            } else {
+                (x, y)
+            };
+
+            println!(
+                "  stream[{}] node={} {}x{} at +{}+{}",
+                idx,
+                stream.node_id,
+                pixmap.width(),
+                pixmap.height(),
+                x,
+                y
+            );
+            tiles.push((x, y, pixmap));
+        }
+
+        let desktop = stitch_portal_tiles(&tiles)?;
+        println!(
+            "Captured desktop via XDG ScreenCast PipeWire ({}x{}, {} streams)!",
+            desktop.width(),
+            desktop.height(),
+            tiles.len()
+        );
+        Ok(desktop)
     }
 
     fn take_portal_screenshot() -> Result<tiny_skia::Pixmap, CaptureError> {
@@ -360,6 +397,52 @@ impl PortalClient {
         );
         Ok(pixmap)
     }
+}
+
+fn stitch_portal_tiles(
+    tiles: &[(i32, i32, tiny_skia::Pixmap)],
+) -> Result<tiny_skia::Pixmap, CaptureError> {
+    if tiles.is_empty() {
+        return Err(CaptureError::new(
+            CaptureErrorKind::InvalidPortalResponse,
+            "No ScreenCast tiles to stitch",
+        ));
+    }
+    if tiles.len() == 1 {
+        return Ok(tiles[0].2.clone());
+    }
+
+    let mut max_x = 0i32;
+    let mut max_y = 0i32;
+    for (x, y, pm) in tiles {
+        max_x = max_x.max(*x + pm.width() as i32);
+        max_y = max_y.max(*y + pm.height() as i32);
+    }
+    if max_x <= 0 || max_y <= 0 {
+        return Err(CaptureError::new(
+            CaptureErrorKind::Internal,
+            "Invalid desktop bounds from ScreenCast tiles",
+        ));
+    }
+
+    let mut desktop = tiny_skia::Pixmap::new(max_x as u32, max_y as u32).ok_or_else(|| {
+        CaptureError::new(
+            CaptureErrorKind::Internal,
+            format!("Failed to allocate desktop pixmap {}x{}", max_x, max_y),
+        )
+    })?;
+    let paint = tiny_skia::PixmapPaint::default();
+    for (x, y, pm) in tiles {
+        desktop.draw_pixmap(
+            *x,
+            *y,
+            pm.as_ref(),
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+    Ok(desktop)
 }
 
 impl Default for PortalClient {
