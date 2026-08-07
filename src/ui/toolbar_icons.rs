@@ -82,29 +82,44 @@ pub fn draw_tool_icon(
             }
         }
         "Laser" => {
+            // Neon glowing laser dot with outer pulse ring
             let mut ipb = PathBuilder::new();
-            ipb.push_circle(cx, cy, 4.0 * scale);
+            ipb.push_circle(cx, cy, 3.5 * scale);
             if let Some(ipath) = ipb.finish() {
                 let mut lpaint = Paint::default();
-                lpaint.set_color(tiny_skia::Color::from_rgba8(245, 50, 50, 240));
+                lpaint.set_color(tiny_skia::Color::from_rgba8(255, 60, 60, 255));
                 lpaint.anti_alias = true;
                 pixmap.fill_path(&ipath, &lpaint, tiny_skia::FillRule::Winding, Transform::identity(), None);
             }
+            let mut rpb = PathBuilder::new();
+            rpb.push_circle(cx, cy, 6.0 * scale);
+            if let Some(rpath) = rpb.finish() {
+                let mut rstroke = icon_stroke.clone();
+                rstroke.width = 1.2 * scale;
+                pixmap.stroke_path(&rpath, &icon_paint, &rstroke, Transform::identity(), None);
+            }
         }
         "Spotlight" => {
+            // Magnifying glass / Spotlight search motif
             let mut ipb = PathBuilder::new();
-            ipb.push_circle(cx, cy, 6.0 * scale);
+            ipb.push_circle(cx - 1.5 * scale, cy - 1.5 * scale, 4.5 * scale);
+            ipb.move_to(cx + 1.8 * scale, cy + 1.8 * scale);
+            ipb.line_to(cx + 6.0 * scale, cy + 6.0 * scale);
             if let Some(ipath) = ipb.finish() {
                 pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
             }
         }
         "Eraser" => {
+            // Detailed angled 3D Eraser block with cap divider line
             let mut ipb = PathBuilder::new();
-            ipb.move_to(cx - 5.0 * scale, cy + 3.0 * scale);
-            ipb.line_to(cx + 1.0 * scale, cy - 5.0 * scale);
-            ipb.line_to(cx + 6.0 * scale, cy - 1.0 * scale);
-            ipb.line_to(cx, cy + 7.0 * scale);
+            ipb.move_to(cx - 5.5 * scale, cy + 2.5 * scale);
+            ipb.line_to(cx + 0.5 * scale, cy - 5.5 * scale);
+            ipb.line_to(cx + 5.5 * scale, cy - 1.5 * scale);
+            ipb.line_to(cx - 0.5 * scale, cy + 6.5 * scale);
             ipb.close();
+            // Eraser felt cap dividing line
+            ipb.move_to(cx - 2.5 * scale, cy - 1.5 * scale);
+            ipb.line_to(cx + 2.5 * scale, cy + 2.5 * scale);
             if let Some(ipath) = ipb.finish() {
                 pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
             }
@@ -217,14 +232,23 @@ pub fn draw_action_icon(
         }
         "Settings" => {
             let mut ipb = PathBuilder::new();
-            ipb.push_circle(cx, cy, 3.5 * scale);
-            for i in 0..6 {
-                let angle = (i as f32) * std::f32::consts::PI / 3.0;
-                let r1 = 4.5 * scale;
-                let r2 = 6.5 * scale;
-                ipb.move_to(cx + r1 * angle.cos(), cy + r1 * angle.sin());
-                ipb.line_to(cx + r2 * angle.cos(), cy + r2 * angle.sin());
+            let teeth = 6;
+            let r_inner = 3.2 * scale;
+            let r_outer = 6.0 * scale;
+            
+            for i in 0..(teeth * 2) {
+                let angle = (i as f32) * std::f32::consts::PI / (teeth as f32);
+                let r = if i % 2 == 0 { r_outer } else { r_inner };
+                let x = cx + r * angle.cos();
+                let y = cy + r * angle.sin();
+                if i == 0 {
+                    ipb.move_to(x, y);
+                } else {
+                    ipb.line_to(x, y);
+                }
             }
+            ipb.close();
+            ipb.push_circle(cx, cy, 2.0 * scale);
             if let Some(ipath) = ipb.finish() {
                 pixmap.stroke_path(&ipath, &icon_paint, &icon_stroke, Transform::identity(), None);
             }

@@ -1,5 +1,5 @@
 use crate::core::{Tool, Color, BlendMode, BackgroundMode, MonitorMode, render_text_to_pixmap};
-use crate::ui::toolbar::{Toolbar, ToolbarLayout, layout, BTN_H, TOOL_BTN, ACTION_BTN_W, COLOR_BTN_W};
+use crate::ui::toolbar::{Toolbar, ToolbarLayout, layout, BAR_H, BTN_H, TOOL_BTN, ACTION_BTN_W, COLOR_BTN_W};
 use crate::ui::toolbar_icons::{draw_tool_icon, draw_action_icon};
 
 impl Toolbar {
@@ -13,6 +13,7 @@ impl Toolbar {
         show_color_menu: bool,
         monitor_mode: MonitorMode,
         has_crop_selection: bool,
+        hover_tooltip: Option<(&str, (f32, f32))>,
     ) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
@@ -35,21 +36,28 @@ impl Toolbar {
             pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
         }
 
-        // Drag grip dots
+        // Drag grip dots (6-dot matrix centered in 24px grip area)
         let mut grip_pb = PathBuilder::new();
-        let gx = self.x + 10.0 * scale;
-        let gy = self.y + 12.0 * scale;
-        let dot_r = 1.2 * scale;
-        let col_w = 4.0 * scale;
-        let row_h = 4.5 * scale;
+        let grip_center_x = self.x + (lay.grip_x + 12.0) * scale;
+        let grip_center_y = self.y + (BAR_H / 2.0) * scale;
+        let dot_r = 1.3 * scale;
+        let col_gap = 5.0 * scale;
+        let row_gap = 5.0 * scale;
+        let gx_start = grip_center_x - (col_gap / 2.0);
+        let gy_start = grip_center_y - row_gap;
+
         for col in 0..2 {
             for row in 0..3 {
-                grip_pb.push_circle(gx + col as f32 * col_w, gy + row as f32 * row_h, dot_r);
+                grip_pb.push_circle(
+                    gx_start + col as f32 * col_gap,
+                    gy_start + row as f32 * row_gap,
+                    dot_r,
+                );
             }
         }
         if let Some(path) = grip_pb.finish() {
             let mut paint = Paint::default();
-            paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 120));
+            paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 130));
             paint.anti_alias = true;
             pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
         }
@@ -137,6 +145,52 @@ impl Toolbar {
         }
         if show_settings_menu {
             self.draw_settings_menu(pixmap, passthrough, bg_mode, monitor_mode);
+        }
+
+        if let Some((text, (tx, ty))) = hover_tooltip {
+            let font_size = (12.0 * scale).round().max(1.0);
+            let padding_x = 10.0 * scale;
+            let padding_y = 6.0 * scale;
+
+            // Calculate exact text pixel width using system font metrics
+            let text_w = if let Some(font) = crate::core::render::get_system_font() {
+                text.chars().map(|ch| font.rasterize(ch, font_size).0.advance_width).sum::<f32>()
+            } else {
+                text.len() as f32 * (font_size * 0.6)
+            };
+
+            let box_w = (text_w + padding_x * 2.0).round();
+            let box_h = (font_size + padding_y * 2.0).round();
+            let box_x = (tx - box_w / 2.0).round();
+            let box_y = ty.round();
+
+            let mut tbpb = PathBuilder::new();
+            self.add_rounded_rect(&mut tbpb, box_x, box_y, box_w, box_h, 6.0 * scale);
+            if let Some(tbpath) = tbpb.finish() {
+                let mut tbpaint = Paint::default();
+                tbpaint.set_color(tiny_skia::Color::from_rgba8(15, 18, 24, 245));
+                tbpaint.anti_alias = true;
+                pixmap.fill_path(&tbpath, &tbpaint, tiny_skia::FillRule::Winding, Transform::identity(), None);
+
+                let mut stroke_paint = Paint::default();
+                stroke_paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 45));
+                let mut stroke = Stroke::default();
+                stroke.width = 1.0 * scale;
+                pixmap.stroke_path(&tbpath, &stroke_paint, &stroke, Transform::identity(), None);
+            }
+
+            let text_x = (box_x + padding_x).round();
+            let text_y = (box_y + padding_y).round();
+
+            render_text_to_pixmap(
+                text,
+                text_x,
+                text_y,
+                font_size,
+                Color::new(235, 240, 250, 255),
+                BlendMode::Normal,
+                pixmap,
+            );
         }
     }
 
@@ -267,7 +321,7 @@ impl Toolbar {
         let lay = layout();
         let menu_x = self.x + lay.settings_menu_x() * scale;
         let menu_y = self.y + self.height + 6.0 * scale;
-        let menu_w = 240.0 * scale;
+        let menu_w = 260.0 * scale;
         let menu_h = 130.0 * scale;
 
         let mut pb = PathBuilder::new();
@@ -296,7 +350,7 @@ impl Toolbar {
         ];
 
         let mut item_y = (menu_y + 8.0 * scale).round();
-        let font_size = (14.0 * scale).round().max(1.0);
+        let font_size = (13.0 * scale).round().max(1.0);
 
         for (label, val) in &items {
             let mut row_pb = PathBuilder::new();
@@ -309,7 +363,7 @@ impl Toolbar {
             }
 
             let mut ind_pb = PathBuilder::new();
-            self.add_rounded_rect(&mut ind_pb, menu_x + 12.0 * scale, item_y + 7.0 * scale, 18.0 * scale, 18.0 * scale, 4.0 * scale);
+            self.add_rounded_rect(&mut ind_pb, menu_x + 12.0 * scale, item_y + 8.0 * scale, 16.0 * scale, 16.0 * scale, 4.0 * scale);
             if let Some(ind_path) = ind_pb.finish() {
                 let mut ind_paint = Paint::default();
                 ind_paint.set_color(tiny_skia::Color::from_rgba8(50, 120, 240, 220));
@@ -318,8 +372,8 @@ impl Toolbar {
 
             render_text_to_pixmap(
                 label,
-                (menu_x + 38.0 * scale).round(),
-                (item_y + 8.0 * scale).round(),
+                (menu_x + 36.0 * scale).round(),
+                (item_y + 10.0 * scale).round(),
                 font_size,
                 Color::new(220, 225, 235, 255),
                 BlendMode::Normal,
@@ -328,8 +382,8 @@ impl Toolbar {
 
             render_text_to_pixmap(
                 val,
-                (menu_x + 125.0 * scale).round(),
-                (item_y + 8.0 * scale).round(),
+                (menu_x + 175.0 * scale).round(),
+                (item_y + 10.0 * scale).round(),
                 font_size,
                 Color::new(140, 200, 255, 255),
                 BlendMode::Normal,

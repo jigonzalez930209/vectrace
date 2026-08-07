@@ -19,6 +19,7 @@ pub enum ToolbarAction {
 }
 
 /// Logical (unscaled) toolbar metrics.
+pub const LEFT_PAD: f32 = 10.0;
 pub const GRIP_W: f32 = 24.0;
 pub const BTN_GAP: f32 = 6.0;
 pub const GROUP_PAD: f32 = 8.0;
@@ -34,6 +35,7 @@ pub const ACTION_COUNT: usize = 7;
 #[derive(Debug, Clone, Copy)]
 pub struct ToolbarLayout {
     pub width: f32,
+    pub grip_x: f32,
     pub dividers: [f32; 3],
     pub tool_xs: [f32; TOOL_COUNT],
     pub color_x: f32,
@@ -42,7 +44,8 @@ pub struct ToolbarLayout {
 
 impl ToolbarLayout {
     fn compute() -> Self {
-        let div0 = GRIP_W;
+        let grip_x = LEFT_PAD;
+        let div0 = grip_x + GRIP_W;
         let tools_start = div0 + GROUP_PAD;
         let mut tool_xs = [0.0; TOOL_COUNT];
         for i in 0..TOOL_COUNT {
@@ -63,6 +66,7 @@ impl ToolbarLayout {
 
         Self {
             width,
+            grip_x,
             dividers: [div0, div1, div2],
             tool_xs,
             color_x,
@@ -220,6 +224,60 @@ impl Toolbar {
         }
 
         Some(ToolbarAction::StartDrag)
+    }
+
+    pub fn tooltip_for_hover(&self, mx: f32, my: f32, has_crop_selection: bool) -> Option<(&'static str, (f32, f32))> {
+        if mx < self.x || mx > self.x + self.width || my < self.y || my > self.y + self.height {
+            return None;
+        }
+
+        let rx = (mx - self.x) / self.scale_factor;
+        let lay = layout();
+
+        let tool_tooltips = [
+            "Pencil (P)",
+            "Highlighter (H)",
+            "Line (L)",
+            "Arrow (A)",
+            "Rectangle (R)",
+            "Oval (O)",
+            "Laser Pointer (K)",
+            "Spotlight (N)",
+            "Eraser (E)",
+            if has_crop_selection { "Confirm Crop (Enter)" } else { "Crop Region (Ctrl+Shift+S)" },
+        ];
+
+        for (i, &tip) in tool_tooltips.iter().enumerate() {
+            let x0 = lay.tool_xs[i];
+            if rx >= x0 && rx < x0 + TOOL_BTN {
+                let center_x = self.x + (x0 + TOOL_BTN / 2.0) * self.scale_factor;
+                return Some((tip, (center_x, self.y + self.height + 6.0 * self.scale_factor)));
+            }
+        }
+
+        if rx >= lay.color_x && rx < lay.color_x + COLOR_BTN_W {
+            let center_x = self.x + (lay.color_x + COLOR_BTN_W / 2.0) * self.scale_factor;
+            return Some(("Select Color", (center_x, self.y + self.height + 6.0 * self.scale_factor)));
+        }
+
+        let action_tooltips = [
+            "Save Screenshot (S)",
+            "Toggle Background (B)",
+            "Clear Screen (C)",
+            "Toggle Click-Through (Space)",
+            "Settings Menu",
+            "Minimize to Tray (M)",
+            "Exit Vectrace (Esc)",
+        ];
+        for (i, &tip) in action_tooltips.iter().enumerate() {
+            let x0 = lay.action_xs[i];
+            if rx >= x0 && rx < x0 + ACTION_BTN_W {
+                let center_x = self.x + (x0 + ACTION_BTN_W / 2.0) * self.scale_factor;
+                return Some((tip, (center_x, self.y + self.height + 6.0 * self.scale_factor)));
+            }
+        }
+
+        None
     }
 
     pub fn palette_colors() -> Vec<Color> {
