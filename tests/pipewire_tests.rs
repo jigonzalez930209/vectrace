@@ -7,19 +7,19 @@ use std::time::Instant;
 #[test]
 fn test_spa_video_format_mapping() {
     assert_eq!(
-        SpaVideoFormat::from_spa_id(6).to_capture_format(),
+        SpaVideoFormat::from_spa_id(12).to_capture_format(),
         Some(CapturePixelFormat::Bgra8888)
     );
     assert_eq!(
-        SpaVideoFormat::from_spa_id(7).to_capture_format(),
+        SpaVideoFormat::from_spa_id(8).to_capture_format(),
         Some(CapturePixelFormat::Bgrx8888)
     );
     assert_eq!(
-        SpaVideoFormat::from_spa_id(12).to_capture_format(),
+        SpaVideoFormat::from_spa_id(11).to_capture_format(),
         Some(CapturePixelFormat::Rgba8888)
     );
     assert_eq!(
-        SpaVideoFormat::from_spa_id(14).to_capture_format(),
+        SpaVideoFormat::from_spa_id(7).to_capture_format(),
         Some(CapturePixelFormat::Rgbx8888)
     );
     assert_eq!(
