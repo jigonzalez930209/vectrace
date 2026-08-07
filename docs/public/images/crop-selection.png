@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400">
+  <rect width="800" height="400" fill="#181c24"/>
+  <rect x="150" y="80" width="500" height="240" fill="none" stroke="#00f0ff" stroke-width="2" stroke-dasharray="6,6"/>
+  <text x="400" y="200" font-family="sans-serif" font-size="20" fill="#00f0ff" text-anchor="middle">Crop Region Selection (500 x 240 px)</text>
+</svg>
