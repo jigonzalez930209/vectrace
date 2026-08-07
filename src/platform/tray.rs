@@ -1,6 +1,6 @@
 use ksni::{Tray, TrayMethods, MenuItem};
 use ksni::menu::StandardItem;
-use std::sync::mpsc::Sender;
+use std::sync::{mpsc::Sender, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrayEvent {
@@ -19,67 +19,43 @@ pub struct VectraceTray {
     tx: Sender<TrayEvent>,
 }
 
+const LOGO_SVG: &[u8] = include_bytes!("../../assets/vectrace.svg");
+
+fn logo_tree() -> &'static resvg::usvg::Tree {
+    static TREE: OnceLock<resvg::usvg::Tree> = OnceLock::new();
+    TREE.get_or_init(|| {
+        let opt = resvg::usvg::Options::default();
+        resvg::usvg::Tree::from_data(LOGO_SVG, &opt).expect("assets/vectrace.svg must parse")
+    })
+}
+
+/// Rasterize the brand SVG into a StatusNotifierItem ARGB pixmap.
 fn create_vectrace_icon(size: i32) -> ksni::Icon {
-    let mut pixels = Vec::with_capacity((size * size * 4) as usize);
-    let fsize = size as f32;
+    let size_u = size.max(1) as u32;
+    let tree = logo_tree();
+    let mut pixmap = tiny_skia::Pixmap::new(size_u, size_u).expect("tray pixmap");
 
-    for y in 0..size {
-        for x in 0..size {
-            let fx = x as f32;
-            let fy = y as f32;
+    let svg = tree.size();
+    let scale = (size as f32) / svg.width().max(svg.height()).max(1.0);
+    let tx = (size as f32 - svg.width() * scale) * 0.5;
+    let ty = (size as f32 - svg.height() * scale) * 0.5;
+    let transform = tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, tx, ty);
 
-            // Normalize coordinates to [-1.0, 1.0]
-            let nx = (fx - fsize / 2.0) / (fsize / 2.0);
-            let ny = (fy - fsize / 2.0) / (fsize / 2.0);
-            let dist_center = (nx * nx + ny * ny).sqrt();
+    resvg::render(tree, transform, &mut pixmap.as_mut());
 
-            // Outer circular badge (#141722)
-            let in_badge = dist_center <= 0.88;
-
-            // Diagonal Vector Pen / Stylus line (from top-right to bottom-left)
-            // Line: nx + ny = 0  => dist = |nx + ny| / sqrt(2)
-            let line_dist = (nx + ny).abs() / 1.4142;
-            let in_stem = line_dist <= 0.18 && (nx - ny).abs() <= 0.70;
-
-            // Cyan glowing nib at tip (bottom-left)
-            let nib_dist = ((nx + 0.45).powi(2) + (ny - 0.45).powi(2)).sqrt();
-            let in_nib = nib_dist <= 0.22;
-
-            // Top-right handle accent
-            let top_dist = ((nx - 0.45).powi(2) + (ny + 0.45).powi(2)).sqrt();
-            let in_top = top_dist <= 0.22;
-
-            if in_nib {
-                // Bright Electric Cyan Nib (#00f0ff) in ARGB (A, R, G, B)
-                pixels.push(255); // Alpha
-                pixels.push(0);   // Red
-                pixels.push(240); // Green
-                pixels.push(255); // Blue
-            } else if in_stem || in_top {
-                // Pure White Stylus Body (#ffffff)
-                pixels.push(255); // Alpha
-                pixels.push(245); // Red
-                pixels.push(248); // Green
-                pixels.push(250); // Blue
-            } else if in_badge {
-                // Deep Charcoal Glass Badge (#161a24)
-                pixels.push(245); // Alpha
-                pixels.push(22);  // Red
-                pixels.push(26);  // Green
-                pixels.push(36);  // Blue
-            } else {
-                // Transparent border
-                pixels.push(0);
-                pixels.push(0);
-                pixels.push(0);
-                pixels.push(0);
-            }
-        }
+    // Freedesktop IconPixmap: ARGB32 network byte order (A, R, G, B).
+    let mut data = Vec::with_capacity((size_u * size_u * 4) as usize);
+    for px in pixmap.pixels() {
+        data.push(px.alpha());
+        data.push(px.red());
+        data.push(px.green());
+        data.push(px.blue());
     }
+
     ksni::Icon {
         width: size,
         height: size,
-        data: pixels,
+        data,
     }
 }
 
@@ -93,7 +69,8 @@ impl Tray for VectraceTray {
     }
 
     fn icon_name(&self) -> String {
-        // Return empty string so StatusNotifierHost falls back to custom ARGB icon_pixmap
+        // Empty → StatusNotifierHost uses icon_pixmap (embedded brand SVG).
+        // Installed packages still ship assets/vectrace.svg as the hicolor app icon.
         String::new()
     }
 
@@ -223,5 +200,5 @@ pub fn spawn_tray(tx: Sender<TrayEvent>) {
             }
         });
     });
-    println!("System Tray Icon (StatusNotifierItem - Lucide Style Monochrome) initialized.");
+    println!("System Tray Icon (brand logo from assets/vectrace.svg) initialized.");
 }
