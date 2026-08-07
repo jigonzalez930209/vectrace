@@ -22,36 +22,53 @@ pub struct VectraceTray {
 fn create_vectrace_icon(size: i32) -> ksni::Icon {
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);
     let fsize = size as f32;
-    let margin = (fsize * 0.1).round();
-    let inner_w = fsize - margin * 2.0;
 
     for y in 0..size {
         for x in 0..size {
             let fx = x as f32;
             let fy = y as f32;
 
-            // Lucide-style Minimalist Vector Pen & Frame Outline (Monochrome White on Dark Badge)
-            let is_in_badge = fx >= margin && fx < fsize - margin && fy >= margin && fy < fsize - margin;
-            
-            // Clean Lucide diagonal pen stroke & crop box corner lines
-            let is_pen_line = (fx - fy).abs() <= (fsize * 0.08) && fx >= margin * 1.5 && fx <= fsize - margin * 1.5;
-            let is_corner_h = (fy == margin || fy == fsize - margin - 1.0) && fx >= margin && fx <= margin + inner_w * 0.35;
-            let is_corner_v = (fx == margin || fx == fsize - margin - 1.0) && fy >= margin && fy <= margin + inner_w * 0.35;
+            // Normalize coordinates to [-1.0, 1.0]
+            let nx = (fx - fsize / 2.0) / (fsize / 2.0);
+            let ny = (fy - fsize / 2.0) / (fsize / 2.0);
+            let dist_center = (nx * nx + ny * ny).sqrt();
 
-            if is_pen_line || is_corner_h || is_corner_v {
-                // High-contrast Lucide White (ARGB)
+            // Outer circular badge (#141722)
+            let in_badge = dist_center <= 0.88;
+
+            // Diagonal Vector Pen / Stylus line (from top-right to bottom-left)
+            // Line: nx + ny = 0  => dist = |nx + ny| / sqrt(2)
+            let line_dist = (nx + ny).abs() / 1.4142;
+            let in_stem = line_dist <= 0.18 && (nx - ny).abs() <= 0.70;
+
+            // Cyan glowing nib at tip (bottom-left)
+            let nib_dist = ((nx + 0.45).powi(2) + (ny - 0.45).powi(2)).sqrt();
+            let in_nib = nib_dist <= 0.22;
+
+            // Top-right handle accent
+            let top_dist = ((nx - 0.45).powi(2) + (ny + 0.45).powi(2)).sqrt();
+            let in_top = top_dist <= 0.22;
+
+            if in_nib {
+                // Bright Electric Cyan Nib (#00f0ff) in ARGB (A, R, G, B)
                 pixels.push(255); // Alpha
-                pixels.push(250); // Red
-                pixels.push(250); // Green
+                pixels.push(0);   // Red
+                pixels.push(240); // Green
+                pixels.push(255); // Blue
+            } else if in_stem || in_top {
+                // Pure White Stylus Body (#ffffff)
+                pixels.push(255); // Alpha
+                pixels.push(245); // Red
+                pixels.push(248); // Green
                 pixels.push(250); // Blue
-            } else if is_in_badge {
-                // Sleek Dark Charcoal Glass Badge
-                pixels.push(220); // Alpha
-                pixels.push(20);  // Red
-                pixels.push(22);  // Green
-                pixels.push(28);  // Blue
+            } else if in_badge {
+                // Deep Charcoal Glass Badge (#161a24)
+                pixels.push(245); // Alpha
+                pixels.push(22);  // Red
+                pixels.push(26);  // Green
+                pixels.push(36);  // Blue
             } else {
-                // Transparent outer border
+                // Transparent border
                 pixels.push(0);
                 pixels.push(0);
                 pixels.push(0);
@@ -76,7 +93,8 @@ impl Tray for VectraceTray {
     }
 
     fn icon_name(&self) -> String {
-        "edit-select".to_string()
+        // Return empty string so StatusNotifierHost falls back to custom ARGB icon_pixmap
+        String::new()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
