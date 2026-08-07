@@ -6,6 +6,6 @@ Comment=Agnostic vector screen marker and drawing overlay for X11 & Wayland
 Exec=vectrace
 Icon=vectrace
 Terminal=false
-Categories=Graphics;Utility;VectorGraphics;ScreenCapture;
+Categories=Graphics;2DGraphics;Utility;
 Keywords=screen;marker;draw;annotate;presentation;wayland;x11;
 StartupNotify=false
