@@ -6,7 +6,7 @@ Vectrace provides a streamlined experience using mouse gestures, floating glassm
 
 | Shortcut | Function |
 | :--- | :--- |
-| `Ctrl + Alt + A` | **Global Daemon Shortcut**: Toggle Passthrough / Active Mode |
+| `Ctrl + Alt + A` | **Global Daemon Shortcut**: Show from tray, or toggle Click-Through when visible |
 | `Space` | Toggle Click-Through Mode |
 | `P` | Select **Pen** tool |
 | `H` | Select **Highlighter** tool |
@@ -25,4 +25,4 @@ Vectrace provides a streamlined experience using mouse gestures, floating glassm
 | `Ctrl + R` | Redo last undone stroke |
 | `C` | Clear canvas drawings |
 | `B` | Cycle Background Mode (Clear ➔ Blackboard ➔ Whiteboard) |
-| `ESC` | Cancel current tool / Clear selection / Exit application |
+| `ESC` | Minimize overlay to System Tray |
