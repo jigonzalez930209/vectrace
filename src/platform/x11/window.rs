@@ -56,6 +56,49 @@ pub fn grab_global_hotkeys(conn: &impl Connection, root: u32, keycode_a: u8) {
     }
 }
 
+/// Keep Escape grabbed while the overlay is mapped (including click-through),
+/// so Esc always minimizes to the tray without stealing other apps' keys when hidden.
+pub fn grab_escape_key(conn: &impl Connection, root: u32, keycode_escape: u8) {
+    if keycode_escape == 0 {
+        return;
+    }
+    let modifiers = [
+        0u16,
+        u16::from(ModMask::LOCK),
+        u16::from(ModMask::M2),
+        u16::from(ModMask::LOCK) | u16::from(ModMask::M2),
+        u16::from(ModMask::ANY),
+    ];
+    for &mod_mask in &modifiers {
+        let _ = conn.grab_key(
+            true,
+            root,
+            mod_mask.into(),
+            keycode_escape,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        );
+    }
+    let _ = conn.flush();
+}
+
+pub fn ungrab_escape_key(conn: &impl Connection, root: u32, keycode_escape: u8) {
+    if keycode_escape == 0 {
+        return;
+    }
+    let modifiers = [
+        0u16,
+        u16::from(ModMask::LOCK),
+        u16::from(ModMask::M2),
+        u16::from(ModMask::LOCK) | u16::from(ModMask::M2),
+        u16::from(ModMask::ANY),
+    ];
+    for &mod_mask in &modifiers {
+        let _ = conn.ungrab_key(keycode_escape, root, mod_mask.into());
+    }
+    let _ = conn.flush();
+}
+
 /// Keycodes that should be stolen from the focused app while the overlay is active.
 ///
 /// On GNOME Wayland the overlay runs as an XWayland `override_redirect` window, so
@@ -159,6 +202,116 @@ pub fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
         }
     }
     let _ = conn.flush();
+}
+
+/// Release keyboard grab/focus so apps, dock, and tray can receive input again.
+///
+/// Important: `set_input_focus(revert, 0)` sets focus to **None** and leaves the
+/// desktop dead until Alt+Tab (especially on GNOME/XWayland). We must either
+/// activate another toplevel or use PointerRoot (window id 1).
+pub fn release_keyboard_focus(conn: &impl Connection, root: u32, overlay_win: u32) {
+    let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+
+    if let Some(target) = find_focus_target_under_pointer(conn, root, overlay_win) {
+        focus_x11_window(conn, root, target);
+    } else {
+        // PointerRoot as focus (XCB_POINTER_ROOT == 1), not None (0).
+        let _ = conn.set_input_focus(
+            InputFocus::NONE,
+            u32::from(InputFocus::POINTER_ROOT),
+            Time::CURRENT_TIME,
+        );
+        let _ = conn.flush();
+    }
+}
+
+/// Topmost mapped toplevel under the pointer, skipping our overlay.
+fn find_focus_target_under_pointer(
+    conn: &impl Connection,
+    root: u32,
+    overlay_win: u32,
+) -> Option<u32> {
+    let pointer = conn.query_pointer(root).ok()?.reply().ok()?;
+    let px = pointer.root_x;
+    let py = pointer.root_y;
+
+    // Prefer EWMH stacking (bottom → top).
+    let stacking = ewmh_client_list_stacking(conn, root).unwrap_or_default();
+    for &win in stacking.iter().rev() {
+        if win == 0 || win == overlay_win || win == root {
+            continue;
+        }
+        if window_contains_point(conn, root, win, px, py) {
+            return Some(toplevel_of(conn, root, win).unwrap_or(win));
+        }
+    }
+
+    // Fallback: walk root children (also bottom → top in X11 query_tree).
+    let tree = conn.query_tree(root).ok()?.reply().ok()?;
+    for &win in tree.children.iter().rev() {
+        if win == 0 || win == overlay_win {
+            continue;
+        }
+        if window_contains_point(conn, root, win, px, py) {
+            return Some(win);
+        }
+    }
+    None
+}
+
+fn ewmh_client_list_stacking(conn: &impl Connection, root: u32) -> Option<Vec<u32>> {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let atom = conn
+        .intern_atom(false, b"_NET_CLIENT_LIST_STACKING")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let reply = conn
+        .get_property(false, root, atom, AtomEnum::WINDOW, 0, 65536)
+        .ok()?
+        .reply()
+        .ok()?;
+    Some(reply.value32()?.collect())
+}
+
+fn window_contains_point(conn: &impl Connection, root: u32, win: u32, px: i16, py: i16) -> bool {
+    let Some(attrs) = conn
+        .get_window_attributes(win)
+        .ok()
+        .and_then(|c| c.reply().ok())
+    else {
+        return false;
+    };
+    if attrs.map_state != x11rb::protocol::xproto::MapState::VIEWABLE {
+        return false;
+    }
+    let Some(geom) = conn.get_geometry(win).ok().and_then(|c| c.reply().ok()) else {
+        return false;
+    };
+    let Some(tr) = conn
+        .translate_coordinates(win, root, 0, 0)
+        .ok()
+        .and_then(|c| c.reply().ok())
+    else {
+        return false;
+    };
+    let x0 = tr.dst_x;
+    let y0 = tr.dst_y;
+    let x1 = x0.saturating_add(geom.width as i16);
+    let y1 = y0.saturating_add(geom.height as i16);
+    px >= x0 && px < x1 && py >= y0 && py < y1
+}
+
+fn toplevel_of(conn: &impl Connection, root: u32, mut win: u32) -> Option<u32> {
+    for _ in 0..16 {
+        let tree = conn.query_tree(win).ok()?.reply().ok()?;
+        if tree.parent == 0 || tree.parent == root {
+            return Some(win);
+        }
+        win = tree.parent;
+    }
+    Some(win)
 }
 
 /// Take keyboard focus and grab the keyboard on the overlay window.
