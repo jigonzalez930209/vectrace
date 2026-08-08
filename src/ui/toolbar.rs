@@ -14,6 +14,7 @@ pub enum ToolbarAction {
     ToggleColorMenu,
     ToggleMonitorMode,
     MinimizeToTray,
+    ToggleAutostart,
     Exit,
     StartDrag,
 }
@@ -31,6 +32,9 @@ pub const BTN_H: f32 = 30.0;
 pub const BAR_H: f32 = 38.0;
 pub const TOOL_COUNT: usize = 10;
 pub const ACTION_COUNT: usize = 7;
+/// Logical height of the settings dropdown (4 rows × 38 + padding).
+pub const SETTINGS_MENU_W: f32 = 260.0;
+pub const SETTINGS_MENU_H: f32 = 168.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ToolbarLayout {
@@ -157,14 +161,15 @@ impl Toolbar {
         if show_settings_menu {
             let menu_x = self.x + lay.settings_menu_x() * scale;
             let menu_y = self.y + self.height + 6.0 * scale;
-            let menu_w = 240.0 * scale;
-            let menu_h = 130.0 * scale;
+            let menu_w = SETTINGS_MENU_W * scale;
+            let menu_h = SETTINGS_MENU_H * scale;
 
             if click_x >= menu_x && click_x <= menu_x + menu_w && click_y >= menu_y && click_y <= menu_y + menu_h {
                 let ry = (click_y - menu_y) / scale;
                 if ry >= 8.0 && ry < 44.0  { return Some(ToolbarAction::ToggleMonitorMode); }
                 if ry >= 48.0 && ry < 84.0  { return Some(ToolbarAction::TogglePassthrough); }
                 if ry >= 88.0 && ry < 124.0 { return Some(ToolbarAction::ToggleBackgroundMode); }
+                if ry >= 128.0 && ry < 164.0 { return Some(ToolbarAction::ToggleAutostart); }
                 return None;
             }
         }
@@ -266,8 +271,8 @@ impl Toolbar {
             "Clear Screen (C)",
             "Toggle Click-Through (Space)",
             "Settings Menu",
-            "Minimize to Tray (M)",
-            "Exit Vectrace (Esc)",
+            "Minimize to Tray (Esc)",
+            "Exit Vectrace",
         ];
         for (i, &tip) in action_tooltips.iter().enumerate() {
             let x0 = lay.action_xs[i];
