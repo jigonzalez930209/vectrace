@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::core::canvas::{BlendMode, Color, Point, Stroke, StrokeType};
 
@@ -6,6 +7,17 @@ use crate::core::canvas::{BlendMode, Color, Point, Stroke, StrokeType};
 const EMBEDDED_FONT_BYTES: &[u8] = include_bytes!("../../assets/Roboto-Regular.ttf");
 
 static SYSTEM_FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
+static GLYPH_CACHE: OnceLock<Mutex<HashMap<(char, u32), CachedGlyph>>> = OnceLock::new();
+
+struct CachedGlyph {
+    width: usize,
+    height: usize,
+    xmin: f32,
+    ymin: f32,
+    glyph_h: f32,
+    advance: f32,
+    bitmap: Vec<u8>,
+}
 
 pub fn get_system_font() -> &'static Option<fontdue::Font> {
     SYSTEM_FONT.get_or_init(|| {
@@ -34,6 +46,80 @@ pub fn get_system_font() -> &'static Option<fontdue::Font> {
     })
 }
 
+fn glyph_cache() -> &'static Mutex<HashMap<(char, u32), CachedGlyph>> {
+    GLYPH_CACHE.get_or_init(|| Mutex::new(HashMap::with_capacity(256)))
+}
+
+fn with_cached_glyph<R>(font: &fontdue::Font, ch: char, font_size: f32, f: impl FnOnce(&CachedGlyph) -> R) -> R {
+    let key = (ch, font_size.to_bits());
+    let mut cache = glyph_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if !cache.contains_key(&key) {
+        let (metrics, bitmap) = font.rasterize(ch, font_size);
+        if cache.len() > 2048 {
+            cache.clear();
+        }
+        cache.insert(key, CachedGlyph {
+            width: metrics.width,
+            height: metrics.height,
+            xmin: metrics.bounds.xmin,
+            ymin: metrics.bounds.ymin,
+            glyph_h: metrics.bounds.height,
+            advance: metrics.advance_width,
+            bitmap,
+        });
+    }
+    f(cache.get(&key).unwrap())
+}
+
+/// Advance-width sum for layout (crop size label, tooltips, etc.).
+/// Matches `render_text_to_pixmap` rounding so box padding stays symmetric.
+pub fn measure_text_width(text: &str, font_size: f32) -> f32 {
+    measure_text_ink(text, font_size).0
+}
+
+/// Ink bounds for a string as drawn by `render_text_to_pixmap`.
+/// Returns `(advance_width, ink_top, ink_bottom)` relative to `start_y`
+/// (the same origin passed to `render_text_to_pixmap`).
+pub fn measure_text_ink(text: &str, font_size: f32) -> (f32, f32, f32) {
+    let font_size = font_size.round().max(1.0);
+    let Some(font) = get_system_font() else {
+        let w = text.chars().count() as f32 * font_size * 0.55;
+        return (w, 0.0, font_size);
+    };
+    let ascent = font
+        .horizontal_line_metrics(font_size)
+        .map(|m| m.ascent)
+        .unwrap_or(font_size * 0.8);
+
+    let mut width = 0.0f32;
+    let mut ink_top = f32::INFINITY;
+    let mut ink_bottom = f32::NEG_INFINITY;
+    let mut cur_x = 0.0f32;
+
+    for ch in text.chars() {
+        let advance = with_cached_glyph(font, ch, font_size, |g| {
+            if g.width > 0 && g.height > 0 {
+                // Same placement as render_text_to_pixmap:
+                // gy = start_y + ascent - ymin - glyph_h
+                let top = ascent - g.ymin - g.glyph_h;
+                let bottom = top + g.height as f32;
+                ink_top = ink_top.min(top);
+                ink_bottom = ink_bottom.max(bottom);
+            }
+            g.advance
+        });
+        cur_x = (cur_x + advance).round();
+        width = cur_x;
+    }
+
+    if !ink_top.is_finite() || !ink_bottom.is_finite() || ink_bottom <= ink_top {
+        // Spaces / empty ink — fall back to em box.
+        (width, 0.0, ascent)
+    } else {
+        (width, ink_top, ink_bottom)
+    }
+}
+
 /// Renders a text string onto a pixmap using alpha blending directly into the RGBA buffer.
 /// PERFORMANCE: Avoids per-pixel `fill_rect` calls by compositing directly into the pixel buffer
 /// using Porter-Duff SourceOver alpha blending. This eliminates thousands of tiny-skia drawcalls.
@@ -53,50 +139,47 @@ pub fn render_text_to_pixmap(
         let pix_h = pixmap.height() as i32;
         let data = pixmap.data_mut();
 
-        // Retrieve font ascent to establish correct baseline for top-left aligned start_y
         let font_metrics = font.horizontal_line_metrics(font_size);
         let ascent = font_metrics.map(|m| m.ascent).unwrap_or(font_size * 0.8);
         let baseline_y = start_y + ascent;
 
         for ch in text.chars() {
-            let (metrics, bitmap) = font.rasterize(ch, font_size);
-            if metrics.width > 0 && metrics.height > 0 {
-                let gx = (cur_x + metrics.bounds.xmin).round() as i32;
-                // fontdue metrics.bounds.ymin is measured upwards from baseline.
-                // Top edge of glyph bitmap is: baseline_y - (metrics.bounds.ymin + metrics.bounds.height)
-                let gy = (baseline_y - metrics.bounds.ymin - metrics.bounds.height).round() as i32;
+            let advance = with_cached_glyph(font, ch, font_size, |g| {
+                if g.width > 0 && g.height > 0 {
+                    let gx = (cur_x + g.xmin).round() as i32;
+                    let gy = (baseline_y - g.ymin - g.glyph_h).round() as i32;
 
-                for row in 0..metrics.height as i32 {
-                    let py = gy + row;
-                    if py < 0 || py >= pix_h {
-                        continue;
-                    }
-                    for col in 0..metrics.width as i32 {
-                        let px = gx + col;
-                        if px < 0 || px >= pix_w {
+                    for row in 0..g.height as i32 {
+                        let py = gy + row;
+                        if py < 0 || py >= pix_h {
                             continue;
                         }
-                        let alpha_coverage = bitmap[(row as usize) * metrics.width + col as usize];
-                        if alpha_coverage == 0 {
-                            continue;
+                        for col in 0..g.width as i32 {
+                            let px = gx + col;
+                            if px < 0 || px >= pix_w {
+                                continue;
+                            }
+                            let alpha_coverage = g.bitmap[(row as usize) * g.width + col as usize];
+                            if alpha_coverage == 0 {
+                                continue;
+                            }
+                            let src_a = ((color.a as u32 * alpha_coverage as u32) / 255) as u8;
+                            if src_a == 0 {
+                                continue;
+                            }
+                            let dst_idx = ((py * pix_w + px) as usize) * 4;
+                            let inv_a = 255u32 - src_a as u32;
+                            let src_a32 = src_a as u32;
+                            data[dst_idx]     = ((color.r as u32 * src_a32 + data[dst_idx] as u32 * inv_a) / 255) as u8;
+                            data[dst_idx + 1] = ((color.g as u32 * src_a32 + data[dst_idx + 1] as u32 * inv_a) / 255) as u8;
+                            data[dst_idx + 2] = ((color.b as u32 * src_a32 + data[dst_idx + 2] as u32 * inv_a) / 255) as u8;
+                            data[dst_idx + 3] = (src_a32 + data[dst_idx + 3] as u32 * inv_a / 255) as u8;
                         }
-                        // Combined source alpha (glyph coverage × color alpha)
-                        let src_a = ((color.a as u32 * alpha_coverage as u32) / 255) as u8;
-                        if src_a == 0 {
-                            continue;
-                        }
-                        let dst_idx = ((py * pix_w + px) as usize) * 4;
-                        // Porter-Duff SourceOver: out = src + dst * (1 - src_a)
-                        let inv_a = 255u32 - src_a as u32;
-                        let src_a32 = src_a as u32;
-                        data[dst_idx]     = ((color.r as u32 * src_a32 + data[dst_idx] as u32 * inv_a) / 255) as u8;
-                        data[dst_idx + 1] = ((color.g as u32 * src_a32 + data[dst_idx + 1] as u32 * inv_a) / 255) as u8;
-                        data[dst_idx + 2] = ((color.b as u32 * src_a32 + data[dst_idx + 2] as u32 * inv_a) / 255) as u8;
-                        data[dst_idx + 3] = (src_a32 + data[dst_idx + 3] as u32 * inv_a / 255) as u8;
                     }
                 }
-            }
-            cur_x = (cur_x + metrics.advance_width).round();
+                g.advance
+            });
+            cur_x = (cur_x + advance).round();
         }
     }
 }
@@ -118,7 +201,14 @@ pub fn render_stroke(stroke: &Stroke, pixmap: &mut tiny_skia::Pixmap) {
 
     match stroke.stroke_type {
         StrokeType::Freehand => {
-            let smoothed = stroke.smoothed_points(5);
+            // Prefer incremental smooth cache (O(1) append per point).
+            let owned;
+            let smoothed = if !stroke.smooth_cache.is_empty() {
+                stroke.smooth_cache.as_slice()
+            } else {
+                owned = stroke.smoothed_points(3);
+                owned.as_slice()
+            };
             if smoothed.is_empty() {
                 return;
             }
