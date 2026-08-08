@@ -1,5 +1,5 @@
 use crate::core::canvas::{current_time_ms, Color, BlendMode};
-use crate::core::render::render_text_to_pixmap;
+use crate::core::render::{measure_text_ink, render_text_to_pixmap};
 
 #[derive(Debug, Clone)]
 pub struct ToastNotification {
@@ -19,23 +19,34 @@ impl ToastNotification {
         current_time_ms() >= self.expire_ms
     }
 
-    pub fn draw(&self, pixmap: &mut tiny_skia::Pixmap, canvas_width: f32, scale: f32) {
+    /// Draw toast centered horizontally, with its top at `below_y` (typically just under the toolbar).
+    /// Uses the same Roboto metrics / padding model as toolbar tooltips.
+    pub fn draw(
+        &self,
+        pixmap: &mut tiny_skia::Pixmap,
+        canvas_width: f32,
+        scale: f32,
+        below_y: f32,
+    ) {
         if self.is_expired() {
             return;
         }
 
-        let font_size = (14.0 * scale).round().max(1.0);
-        let padding_x = (18.0 * scale).round();
-        let text_w = ((self.message.len() as f32 * 8.0) * scale).round();
-        let toast_w = text_w + padding_x * 2.0;
-        let toast_h = (32.0 * scale).round();
+        let font_size = (12.0 * scale).round().max(1.0);
+        let pad = 8.0 * scale;
+
+        let (text_w, ink_top, ink_bottom) = measure_text_ink(&self.message, font_size);
+        let ink_h = (ink_bottom - ink_top).max(1.0);
+
+        let toast_w = (text_w + pad * 2.0).round().max(1.0);
+        let toast_h = (ink_h + pad * 2.0).round().max(1.0);
         let toast_x = ((canvas_width - toast_w) / 2.0).round();
-        let toast_y = (60.0 * scale).round();
+        let toast_y = below_y.round();
 
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
         let mut pb = PathBuilder::new();
-        let r = 8.0 * scale;
+        let r = 6.0 * scale;
         pb.move_to(toast_x + r, toast_y);
         pb.line_to(toast_x + toast_w - r, toast_y);
         pb.quad_to(toast_x + toast_w, toast_y, toast_x + toast_w, toast_y + r);
@@ -48,23 +59,26 @@ impl ToastNotification {
 
         if let Some(path) = pb.finish() {
             let mut bg_paint = Paint::default();
-            bg_paint.set_color(tiny_skia::Color::from_rgba8(24, 28, 36, 240));
+            bg_paint.set_color(tiny_skia::Color::from_rgba8(15, 18, 24, 245));
             bg_paint.anti_alias = true;
             pixmap.fill_path(&path, &bg_paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
 
             let mut border_paint = Paint::default();
-            border_paint.set_color(tiny_skia::Color::from_rgba8(50, 160, 255, 200));
+            border_paint.set_color(tiny_skia::Color::from_rgba8(50, 160, 255, 180));
             let mut stroke = Stroke::default();
-            stroke.width = 1.2 * scale;
+            stroke.width = 1.0 * scale;
             pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
         }
 
+        let text_x = toast_x + ((toast_w - text_w) * 0.5).round();
+        let text_y = toast_y + pad - ink_top;
+
         render_text_to_pixmap(
             &self.message,
-            toast_x + padding_x,
-            toast_y + toast_h / 2.0 - font_size / 2.0,
+            text_x,
+            text_y,
             font_size,
-            Color::new(255, 255, 255, 255),
+            Color::new(235, 240, 250, 255),
             BlendMode::Normal,
             pixmap,
         );
