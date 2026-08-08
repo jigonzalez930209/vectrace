@@ -146,6 +146,14 @@ impl PlatformBackend for X11Backend {
         // WM hints are ignored for override-redirect, but harmless if present.
         let _ = window::configure_overlay_wm_hints(&conn, screen.root, win_id);
 
+        self.focus_proxy = window::create_focus_proxy(
+            &conn,
+            screen.root,
+            visual_id,
+            depth,
+            colormap,
+        )?;
+
         let gc_id = conn.generate_id()?;
         conn.create_gc(gc_id, win_id, &CreateGCAux::new())?;
 
@@ -270,7 +278,6 @@ impl PlatformBackend for X11Backend {
                     TrayEvent::Exit            => { return Ok(()); }
                 }
                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
-                self.settle_focus_cover(&conn);
             }
 
             let event = if let Some(ev) = pending_events.pop() {
