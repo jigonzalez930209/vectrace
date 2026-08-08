@@ -270,6 +270,7 @@ impl PlatformBackend for X11Backend {
                     TrayEvent::Exit            => { return Ok(()); }
                 }
                 self.redraw_rect(&conn, win_id, gc_id, canvas, &toolbar, None)?;
+                self.settle_focus_cover(&conn);
             }
 
             let event = if let Some(ev) = pending_events.pop() {
