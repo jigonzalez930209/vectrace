@@ -68,7 +68,9 @@ jobs:
         run: cargo deb --no-build
 
       - name: Generate RPM Package
-        run: cargo generate-rpm -o target/generate-rpm/vectrace-0.1.0-1.x86_64.rpm
+        run: |
+          VERSION="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{ if (match($0,/"[^"]+"/)) { print substr($0,RSTART+1,RLENGTH-2); exit } }' Cargo.toml)"
+          cargo generate-rpm -o "target/generate-rpm/vectrace-${VERSION}-1.x86_64.rpm"
 
       - name: Generate AppImage
         run: bash packaging/appimage/build-appimage.sh
