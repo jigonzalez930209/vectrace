@@ -131,6 +131,7 @@ impl X11Backend {
                 ToolbarAction::Exit => { /* handled in run() */ }
             }
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            self.settle_focus_cover(conn);
         } else if !self.passthrough {
             if matches!(self.active_tool, Tool::SelectRegion) {
                 if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
@@ -447,6 +448,7 @@ impl X11Backend {
                 self.passthrough = !self.passthrough;
                 self.apply_passthrough(conn, win_id, root, toolbar)?;
                 self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                self.settle_focus_cover(conn);
                 println!("Global hotkey: click-through = {}", self.passthrough);
             }
             return Ok(false);
@@ -602,6 +604,7 @@ impl X11Backend {
                     self.passthrough = !self.passthrough;
                     self.apply_passthrough(conn, win_id, root, toolbar)?;
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                    self.settle_focus_cover(conn);
                 }
                 XK_B => {
                     canvas.cycle_background_mode();
