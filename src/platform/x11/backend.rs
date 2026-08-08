@@ -23,11 +23,10 @@ pub struct X11Backend {
     pub is_dragging: bool,
     pub drag_offset_x: f32,
     pub drag_offset_y: f32,
-    /// True after we nudged the compositor (unmap/remap) for click-through focus.
-    /// Avoids repeating the flicker on every shape/menu update while already passing through.
+    /// True after we nudged the compositor for click-through focus.
     pub passthrough_focus_released: bool,
-    /// Cover window kept above the overlay until the next redraw finishes.
-    pub pending_focus_cover: Option<crate::platform::x11::window::FocusCover>,
+    /// Invisible 1×1 window used to shed Wayland seat focus without unmapping the overlay.
+    pub focus_proxy: u32,
     pub tray_rx: Option<Receiver<TrayEvent>>,
 
     // Persistent buffers to prevent per-frame allocations
@@ -78,7 +77,7 @@ impl X11Backend {
             drag_offset_x: 0.0,
             drag_offset_y: 0.0,
             passthrough_focus_released: false,
-            pending_focus_cover: None,
+            focus_proxy: 0,
             tray_rx: None,
             base_pixmap: None,
             active_pixmap: None,
@@ -359,18 +358,15 @@ impl X11Backend {
             // but keep Escape grabbed so it always minimizes to tray.
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             crate::platform::x11::window::grab_escape_key(conn, root, self.keycode_escape);
-            // Only nudge once when entering click-through — unmap/remap is what
-            // actually returns GNOME seat focus (same mechanism as tray minimize).
+            // Only once when entering click-through: move seat onto focus_proxy
+            // then unmap the proxy (overlay stays mapped → no flicker).
             if !self.passthrough_focus_released {
-                self.settle_focus_cover(conn);
-                let bgra = self.overlay_bgra_frame();
-                let cover = crate::platform::x11::window::release_keyboard_focus(
+                crate::platform::x11::window::release_keyboard_focus(
                     conn,
                     root,
                     win_id,
-                    bgra.as_deref(),
+                    self.focus_proxy,
                 );
-                self.pending_focus_cover = cover;
                 self.passthrough_focus_released = true;
             } else {
                 let _ = conn.ungrab_keyboard(x11rb::protocol::xproto::Time::CURRENT_TIME);
@@ -416,30 +412,6 @@ impl X11Backend {
         }
         conn.flush()?;
         Ok(())
-    }
-
-    /// BGRA copy of the last composited overlay frame (for flicker-free focus cover).
-    fn overlay_bgra_frame(&self) -> Option<Vec<u8>> {
-        let pm = self.active_pixmap.as_ref()?;
-        if pm.width() != self.width as u32 || pm.height() != self.height as u32 {
-            return None;
-        }
-        let src = pm.data();
-        let mut bgra = vec![0u8; src.len()];
-        for (s, d) in src.chunks_exact(4).zip(bgra.chunks_exact_mut(4)) {
-            d[0] = s[2];
-            d[1] = s[1];
-            d[2] = s[0];
-            d[3] = s[3];
-        }
-        Some(bgra)
-    }
-
-    /// Drop the focus cover after the overlay has been redrawn underneath it.
-    pub fn settle_focus_cover(&mut self, conn: &impl Connection) {
-        if let Some(cover) = self.pending_focus_cover.take() {
-            crate::platform::x11::window::destroy_focus_cover(conn, cover);
-        }
     }
 }
 
