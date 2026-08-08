@@ -206,16 +206,31 @@ pub fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
 
 /// Release keyboard grab/focus so apps, dock, and tray can receive input again.
 ///
-/// Important: `set_input_focus(revert, 0)` sets focus to **None** and leaves the
-/// desktop dead until Alt+Tab (especially on GNOME/XWayland). We must either
-/// activate another toplevel or use PointerRoot (window id 1).
+/// On GNOME + XWayland, X11 `SetInputFocus` alone does **not** move the Wayland
+/// seat away from our still-mapped overlay — only an unmap does (same as tray
+/// minimize). We briefly unmap/remap with `_NET_WM_USER_TIME=0` so remap does
+/// not reactivate us, then re-assert ALWAYS-ON-TOP.
 pub fn release_keyboard_focus(conn: &impl Connection, root: u32, overlay_win: u32) {
     let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+    set_wm_input_hint(conn, overlay_win, false);
+    set_net_wm_user_time(conn, overlay_win, 0);
 
+    let _ = conn.unmap_window(overlay_win);
+    let _ = conn.flush();
+    // Round-trip so Mutter processes the unmap and reassigns seat focus.
+    let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+
+    let _ = conn.map_window(overlay_win);
+    request_wm_state_above(conn, root, overlay_win);
+    // Keep USER_TIME at 0 after map so we stay inactive.
+    set_net_wm_user_time(conn, overlay_win, 0);
+    let _ = conn.flush();
+    let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+
+    // Best-effort: activate whatever is under the pointer (X11 clients).
     if let Some(target) = find_focus_target_under_pointer(conn, root, overlay_win) {
         focus_x11_window(conn, root, target);
     } else {
-        // PointerRoot as focus (XCB_POINTER_ROOT == 1), not None (0).
         let _ = conn.set_input_focus(
             InputFocus::NONE,
             u32::from(InputFocus::POINTER_ROOT),
@@ -223,6 +238,33 @@ pub fn release_keyboard_focus(conn: &impl Connection, root: u32, overlay_win: u3
         );
         let _ = conn.flush();
     }
+}
+
+/// ICCCM WM_HINTS.input — false tells the WM not to give us keyboard focus.
+pub fn set_wm_input_hint(conn: &impl Connection, win_id: u32, accept_input: bool) {
+    use x11rb::properties::WmHints;
+    let mut hints = WmHints::new();
+    hints.input = Some(accept_input);
+    let _ = hints.set(conn, win_id);
+}
+
+/// EWMH `_NET_WM_USER_TIME`. Value 0 = map/show without wanting activation.
+pub fn set_net_wm_user_time(conn: &impl Connection, win_id: u32, user_time: u32) {
+    use x11rb::protocol::xproto::{AtomEnum, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+    let Ok(atom) = conn.intern_atom(false, b"_NET_WM_USER_TIME") else {
+        return;
+    };
+    let Ok(atom) = atom.reply() else {
+        return;
+    };
+    let _ = conn.change_property32(
+        PropMode::REPLACE,
+        win_id,
+        atom.atom,
+        AtomEnum::CARDINAL,
+        &[user_time],
+    );
 }
 
 /// Topmost mapped toplevel under the pointer, skipping our overlay.
