@@ -292,22 +292,14 @@ impl PipeWireStreamReader {
                 )
             })?;
 
-        // Mutter is silent; for XDG portal we still settle briefly in case a picker was visible.
-        let settle = match self.remote {
-            PipeWireRemote::Default => Duration::from_millis(80),
-            PipeWireRemote::PortalFd(_) => Duration::from_millis(350),
-        };
-        let mut first_frame_at: Option<Instant> = None;
-
+        // Grab the first PipeWire frame immediately — no post-frame settle.
+        // (Previously waited 40–180ms after the first frame, which felt like lag.)
         while Instant::now() < deadline {
             let loop_ref = mainloop.loop_();
-            let _ = loop_ref.iterate(Duration::from_millis(10));
+            let _ = loop_ref.iterate(Duration::from_millis(2));
             let has_frame = latest_frame.lock().map(|lock| lock.is_some()).unwrap_or(false);
             if has_frame {
-                let first = *first_frame_at.get_or_insert_with(Instant::now);
-                if Instant::now().saturating_duration_since(first) >= settle {
-                    break;
-                }
+                break;
             }
         }
 
