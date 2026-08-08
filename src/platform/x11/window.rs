@@ -204,215 +204,40 @@ pub fn focus_x11_window(conn: &impl Connection, root: u32, win_id: u32) {
     let _ = conn.flush();
 }
 
-/// Handle for a temporary focus-cover window. Keep it mapped until after the
-/// next overlay redraw, then call [`destroy_focus_cover`].
-pub struct FocusCover {
-    pub win: u32,
-    pub gc: u32,
-}
-
-/// Release keyboard grab/focus so apps, dock, and tray can receive input again.
-///
-/// On GNOME + XWayland only an unmap moves the Wayland seat. We briefly
-/// unmap/remap with `_NET_WM_USER_TIME=0`. Pass `bgra` (full-window ZPixmap
-/// pixels) to show a cover during the gap; keep the returned cover until after
-/// your next `put_image`/redraw so the toolbar does not blink.
-pub fn release_keyboard_focus(
+/// Invisible 1×1 override-redirect window used only to shed Wayland seat focus.
+/// Mapping it, focusing it, then unmapping it releases GNOME's keyboard seat
+/// **without** unmapping the visible overlay (no toolbar flicker).
+pub fn create_focus_proxy(
     conn: &impl Connection,
     root: u32,
-    overlay_win: u32,
-    bgra: Option<&[u8]>,
-) -> Option<FocusCover> {
-    use x11rb::protocol::xproto::{
-        CreateGCAux, ImageFormat, StackMode, ConfigureWindowAux, ConnectionExt as _,
-    };
-
-    let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
-    set_wm_input_hint(conn, overlay_win, false);
-    set_net_wm_user_time(conn, overlay_win, 0);
-
-    let snapshot = build_overlay_snapshot(conn, root, overlay_win, bgra);
-    let cover = snapshot
-        .as_ref()
-        .and_then(|snap| map_focus_cover(conn, root, snap));
-
-    // Ensure the cover is on-screen before the overlay disappears.
-    if cover.is_some() {
-        let _ = conn.flush();
-        let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
-    }
-
-    let _ = conn.unmap_window(overlay_win);
-    let _ = conn.flush();
-    let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
-
-    let _ = conn.map_window(overlay_win);
-    request_wm_state_above(conn, root, overlay_win);
-    set_net_wm_user_time(conn, overlay_win, 0);
-
-    if let Some(ref snap) = snapshot {
-        if let Ok(gc) = conn.generate_id() {
-            let _ = conn.create_gc(gc, overlay_win, &CreateGCAux::new());
-            let _ = conn.put_image(
-                ImageFormat::Z_PIXMAP,
-                overlay_win,
-                gc,
-                snap.width,
-                snap.height,
-                0,
-                0,
-                0,
-                snap.depth,
-                &snap.bgra,
-            );
-            let _ = conn.free_gc(gc);
-        }
-    }
-
-    // Keep cover above the remapped overlay until the caller finishes redraw.
-    if let Some(ref c) = cover {
-        let _ = conn.configure_window(
-            c.win,
-            &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-        );
-    }
-    let _ = conn.flush();
-
-    if let Some(target) = find_focus_target_under_pointer(conn, root, overlay_win) {
-        focus_x11_window(conn, root, target);
-    } else {
-        let _ = conn.set_input_focus(
-            InputFocus::NONE,
-            u32::from(InputFocus::POINTER_ROOT),
-            Time::CURRENT_TIME,
-        );
-        let _ = conn.flush();
-    }
-
-    cover
-}
-
-pub fn destroy_focus_cover(conn: &impl Connection, cover: FocusCover) {
-    let _ = conn.unmap_window(cover.win);
-    let _ = conn.destroy_window(cover.win);
-    let _ = conn.free_gc(cover.gc);
-    let _ = conn.flush();
-}
-
-struct OverlaySnapshot {
-    root_x: i16,
-    root_y: i16,
-    width: u16,
-    height: u16,
-    depth: u8,
     visual: u32,
+    depth: u8,
     colormap: u32,
-    bgra: Vec<u8>,
-}
-
-fn build_overlay_snapshot(
-    conn: &impl Connection,
-    root: u32,
-    overlay_win: u32,
-    bgra: Option<&[u8]>,
-) -> Option<OverlaySnapshot> {
-    use x11rb::protocol::xproto::{ImageFormat, ConnectionExt as _};
-
-    let geom = conn.get_geometry(overlay_win).ok()?.reply().ok()?;
-    let attrs = conn.get_window_attributes(overlay_win).ok()?.reply().ok()?;
-    let tr = conn
-        .translate_coordinates(overlay_win, root, 0, 0)
-        .ok()?
-        .reply()
-        .ok()?;
-
-    let expected = geom.width as usize * geom.height as usize * 4;
-    let pixels = if let Some(buf) = bgra {
-        if buf.len() >= expected {
-            buf[..expected].to_vec()
-        } else {
-            return None;
-        }
-    } else {
-        // Slow fallback — prefer caller-supplied pixels from the last frame.
-        let img = conn
-            .get_image(
-                ImageFormat::Z_PIXMAP,
-                overlay_win,
-                0,
-                0,
-                geom.width,
-                geom.height,
-                !0,
-            )
-            .ok()?
-            .reply()
-            .ok()?;
-        if img.data.len() < expected {
-            return None;
-        }
-        img.data[..expected].to_vec()
-    };
-
-    Some(OverlaySnapshot {
-        root_x: tr.dst_x,
-        root_y: tr.dst_y,
-        width: geom.width,
-        height: geom.height,
-        depth: geom.depth,
-        visual: attrs.visual,
-        colormap: attrs.colormap,
-        bgra: pixels,
-    })
-}
-
-fn map_focus_cover(
-    conn: &impl Connection,
-    root: u32,
-    snap: &OverlaySnapshot,
-) -> Option<FocusCover> {
+) -> Result<u32, Box<dyn std::error::Error>> {
     use x11rb::protocol::xproto::{
-        CreateGCAux, CreateWindowAux, EventMask, ImageFormat, WindowClass, StackMode,
-        ConfigureWindowAux, ConnectionExt as _,
+        CreateWindowAux, EventMask, WindowClass, ConnectionExt as _,
     };
 
-    let cover = conn.generate_id().ok()?;
-    let gc = conn.generate_id().ok()?;
+    let win = conn.generate_id()?;
     let aux = CreateWindowAux::new()
-        .colormap(snap.colormap)
+        .colormap(colormap)
         .border_pixel(0)
         .background_pixel(0)
         .override_redirect(1)
         .event_mask(EventMask::NO_EVENT);
-
     conn.create_window(
-        snap.depth,
-        cover,
+        depth,
+        win,
         root,
-        snap.root_x,
-        snap.root_y,
-        snap.width,
-        snap.height,
+        -64,
+        -64,
+        1,
+        1,
         0,
         WindowClass::INPUT_OUTPUT,
-        snap.visual,
+        visual,
         &aux,
-    )
-    .ok()?;
-    conn.create_gc(gc, cover, &CreateGCAux::new()).ok()?;
-    conn.put_image(
-        ImageFormat::Z_PIXMAP,
-        cover,
-        gc,
-        snap.width,
-        snap.height,
-        0,
-        0,
-        0,
-        snap.depth,
-        &snap.bgra,
-    )
-    .ok()?;
+    )?;
     let offscreen = [x11rb::protocol::xproto::Rectangle {
         x: -32000,
         y: -32000,
@@ -424,18 +249,66 @@ fn map_focus_cover(
         x11rb::protocol::shape::SO::SET,
         x11rb::protocol::shape::SK::INPUT,
         x11rb::protocol::xproto::ClipOrdering::UNSORTED,
-        cover,
+        win,
         0,
         0,
         &offscreen,
     );
-    conn.map_window(cover).ok()?;
-    let _ = conn.configure_window(
-        cover,
-        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-    );
     let _ = conn.flush();
-    Some(FocusCover { win: cover, gc })
+    Ok(win)
+}
+
+/// Release keyboard grab/focus so apps, dock, and tray can receive input again.
+///
+/// On GNOME + XWayland, only unmapping the *focused* X11 surface frees the
+/// Wayland seat. We move focus onto the focus proxy, then unmap the proxy —
+/// the visible overlay stays mapped (no flicker).
+pub fn release_keyboard_focus(
+    conn: &impl Connection,
+    root: u32,
+    overlay_win: u32,
+    focus_proxy: u32,
+) {
+    let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+    set_wm_input_hint(conn, overlay_win, false);
+    set_net_wm_user_time(conn, overlay_win, 0);
+
+    if focus_proxy != 0 {
+        let _ = conn.map_window(focus_proxy);
+        let _ = conn.set_input_focus(InputFocus::PARENT, focus_proxy, Time::CURRENT_TIME);
+        let _ = conn.grab_keyboard(
+            false,
+            focus_proxy,
+            Time::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        );
+        let _ = conn.flush();
+        let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+
+        let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+        let _ = conn.unmap_window(focus_proxy);
+        let _ = conn.flush();
+        let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+    } else {
+        let _ = conn.set_input_focus(
+            InputFocus::NONE,
+            u32::from(InputFocus::POINTER_ROOT),
+            Time::CURRENT_TIME,
+        );
+        let _ = conn.flush();
+    }
+
+    if let Some(target) = find_focus_target_under_pointer(conn, root, overlay_win) {
+        focus_x11_window(conn, root, target);
+    } else {
+        let _ = conn.set_input_focus(
+            InputFocus::NONE,
+            u32::from(InputFocus::POINTER_ROOT),
+            Time::CURRENT_TIME,
+        );
+        let _ = conn.flush();
+    }
 }
 
 /// ICCCM WM_HINTS.input — false tells the WM not to give us keyboard focus.
