@@ -97,6 +97,10 @@ pub struct Stroke {
     pub stroke_type: StrokeType,
     pub text_content: Option<String>,
     pub font_size: f32,
+    /// Incremental Catmull–Rom samples for live freehand (avoids O(n²) rebuilds).
+    pub smooth_cache: Vec<Point>,
+    /// How many source points `smooth_cache` covers.
+    pub smooth_src_len: usize,
 }
 
 impl Stroke {
@@ -109,6 +113,8 @@ impl Stroke {
             stroke_type: StrokeType::Freehand,
             text_content: None,
             font_size: 24.0,
+            smooth_cache: Vec::new(),
+            smooth_src_len: 0,
         }
     }
 
@@ -121,6 +127,8 @@ impl Stroke {
             stroke_type,
             text_content: None,
             font_size: 24.0,
+            smooth_cache: Vec::new(),
+            smooth_src_len: 0,
         }
     }
 
@@ -133,11 +141,81 @@ impl Stroke {
             stroke_type: StrokeType::Text,
             text_content: Some(text),
             font_size,
+            smooth_cache: Vec::new(),
+            smooth_src_len: 0,
         }
     }
 
     pub fn add_point(&mut self, point: Point) {
         self.points.push(point);
+        if self.stroke_type == StrokeType::Freehand {
+            self.extend_smooth_cache(3);
+        }
+    }
+
+    /// Rebuild only the dirty Catmull–Rom tail after a new point (O(1) per motion).
+    pub fn extend_smooth_cache(&mut self, steps_per_segment: usize) {
+        let n = self.points.len();
+        if n == 0 {
+            self.smooth_cache.clear();
+            self.smooth_src_len = 0;
+            return;
+        }
+        if n < 3 {
+            self.smooth_cache = self.points.clone();
+            self.smooth_src_len = n;
+            return;
+        }
+
+        let steps = steps_per_segment.max(1);
+        // Segments i use points (i-1,i,i+1,i+2). Adding point n-1 dirties segments
+        // from max(0, n-3) through n-2 inclusive.
+        let first_dirty = n.saturating_sub(3);
+        self.smooth_cache.truncate(first_dirty * steps);
+
+        for i in first_dirty..n - 1 {
+            let p0 = if i == 0 {
+                Point {
+                    x: 2.0 * self.points[0].x - self.points[1].x,
+                    y: 2.0 * self.points[0].y - self.points[1].y,
+                    pressure: 2.0 * self.points[0].pressure - self.points[1].pressure,
+                    timestamp_ms: self.points[0].timestamp_ms,
+                }
+            } else {
+                self.points[i - 1]
+            };
+            let p1 = self.points[i];
+            let p2 = self.points[i + 1];
+            let p3 = if i + 2 >= n {
+                Point {
+                    x: 2.0 * self.points[n - 1].x - self.points[n - 2].x,
+                    y: 2.0 * self.points[n - 1].y - self.points[n - 2].y,
+                    pressure: 2.0 * self.points[n - 1].pressure - self.points[n - 2].pressure,
+                    timestamp_ms: self.points[n - 1].timestamp_ms,
+                }
+            } else {
+                self.points[i + 2]
+            };
+
+            for step in 0..steps {
+                let t = step as f32 / steps as f32;
+                let x = catmull_rom(p0.x, p1.x, p2.x, p3.x, t);
+                let y = catmull_rom(p0.y, p1.y, p2.y, p3.y, t);
+                let pressure = catmull_rom(p0.pressure, p1.pressure, p2.pressure, p3.pressure, t).clamp(0.0, 1.0);
+                let t_ms = p1.timestamp_ms as f64
+                    + (p2.timestamp_ms as f64 - p1.timestamp_ms as f64) * (t as f64);
+                self.smooth_cache.push(Point {
+                    x,
+                    y,
+                    pressure,
+                    timestamp_ms: t_ms as u64,
+                });
+            }
+        }
+        if let Some(&last) = self.points.last() {
+            self.smooth_cache.push(last);
+        }
+        self.smooth_src_len = n;
     }
 
     pub fn prune_laser_points(&mut self, now_ms: u64, max_age_ms: u64) {
@@ -204,6 +282,9 @@ pub enum Command {
     Clear(Vec<Stroke>),
 }
 
+/// Soft cap — keeps undo memory bounded during long annotation sessions.
+pub const MAX_UNDO_DEPTH: usize = 64;
+
 pub struct Canvas {
     width: u32,
     height: u32,
@@ -228,6 +309,13 @@ impl Canvas {
             background_mode: BackgroundMode::Transparent,
             scale_factor: 1.0,
             revision: 0,
+        }
+    }
+
+    fn push_undo(&mut self, cmd: Command) {
+        self.undo_stack.push(cmd);
+        if self.undo_stack.len() > MAX_UNDO_DEPTH {
+            self.undo_stack.remove(0);
         }
     }
 
@@ -264,7 +352,7 @@ impl Canvas {
                 && unfinished.stroke_type != StrokeType::Spotlight
             {
                 self.strokes.push(unfinished.clone());
-                self.undo_stack.push(Command::AddStroke(unfinished));
+                self.push_undo(Command::AddStroke(unfinished));
             }
         }
         self.current_stroke = Some(stroke);
@@ -286,7 +374,7 @@ impl Canvas {
                 && stroke.stroke_type != StrokeType::Spotlight
             {
                 self.strokes.push(stroke.clone());
-                self.undo_stack.push(Command::AddStroke(stroke));
+                self.push_undo(Command::AddStroke(stroke));
             }
         }
         self.revision += 1;
@@ -300,7 +388,7 @@ impl Canvas {
     pub fn clear(&mut self) {
         if !self.strokes.is_empty() {
             let removed = std::mem::take(&mut self.strokes);
-            self.undo_stack.push(Command::Clear(removed));
+            self.push_undo(Command::Clear(removed));
             self.redo_stack.clear();
             self.revision += 1;
         }
@@ -309,11 +397,18 @@ impl Canvas {
 
     pub fn undo(&mut self) -> bool {
         if let Some(cmd) = self.undo_stack.pop() {
-            match cmd.clone() {
-                Command::AddStroke(_)       => { self.strokes.pop(); }
-                Command::Clear(ref strokes) => { self.strokes = strokes.clone(); }
+            match &cmd {
+                Command::AddStroke(_) => {
+                    self.strokes.pop();
+                }
+                Command::Clear(strokes) => {
+                    self.strokes = strokes.clone();
+                }
             }
             self.redo_stack.push(cmd);
+            if self.redo_stack.len() > MAX_UNDO_DEPTH {
+                self.redo_stack.remove(0);
+            }
             self.revision += 1;
             true
         } else {
@@ -323,11 +418,15 @@ impl Canvas {
 
     pub fn redo(&mut self) -> bool {
         if let Some(cmd) = self.redo_stack.pop() {
-            match cmd.clone() {
-                Command::AddStroke(ref stroke) => { self.strokes.push(stroke.clone()); }
-                Command::Clear(_)              => { self.strokes.clear(); }
+            match &cmd {
+                Command::AddStroke(stroke) => {
+                    self.strokes.push(stroke.clone());
+                }
+                Command::Clear(_) => {
+                    self.strokes.clear();
+                }
             }
-            self.undo_stack.push(cmd);
+            self.push_undo(cmd);
             self.revision += 1;
             true
         } else {
