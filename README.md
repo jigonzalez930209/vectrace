@@ -45,21 +45,21 @@
 ### 1. AppImage (Universal Linux - Recommended)
 No installation or root privileges required. Download and run:
 ```bash
-chmod +x Vectrace-v0.1.0-x86_64.AppImage
-./Vectrace-v0.1.0-x86_64.AppImage
+chmod +x Vectrace-v0.2.1_64.AppImage
+./Vectrace-v0.2.1_64.AppImage
 ```
 
 ### 2. Debian / Ubuntu / Linux Mint (.deb)
 ```bash
-sudo dpkg -i vectrace_0.1.0_amd64.deb
+sudo dpkg -i vectrace_0.2.1_amd64.deb
 sudo apt-get install -f # Fix missing dependencies if needed
 ```
 
 ### 3. Fedora / RHEL / CentOS / openSUSE (.rpm)
 ```bash
-sudo rpm -i vectrace-0.1.0-1.x86_64.rpm
+sudo rpm -i vectrace-0.2.1-1.x86_64.rpm
 # or with dnf:
-sudo dnf install ./vectrace-0.1.0-1.x86_64.rpm
+sudo dnf install ./vectrace-0.2.1-1.x86_64.rpm
 ```
 
 ### 4. Arch Linux / Manjaro (PKGBUILD)

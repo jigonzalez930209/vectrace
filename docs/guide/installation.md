@@ -9,19 +9,19 @@ Vectrace is distributed in multiple formats to ensure compatibility with all maj
 ### 1. AppImage (Universal Package)
 Recommended for all Linux distributions. No installation required:
 ```bash
-chmod +x Vectrace-v0.1.0-x86_64.AppImage
-./Vectrace-v0.1.0-x86_64.AppImage
+chmod +x Vectrace-v0.2.1_64.AppImage
+./Vectrace-v0.2.1_64.AppImage
 ```
 
 ### 2. Debian / Ubuntu (.deb)
 ```bash
-sudo dpkg -i vectrace_0.1.0_amd64.deb
+sudo dpkg -i vectrace_0.2.1_amd64.deb
 sudo apt-get install -f
 ```
 
 ### 3. Fedora / RHEL / openSUSE (.rpm)
 ```bash
-sudo dnf install ./vectrace-0.1.0-1.x86_64.rpm
+sudo dnf install ./vectrace-0.2.1-1.x86_64.rpm
 ```
 
 ### 4. Arch Linux / Manjaro
