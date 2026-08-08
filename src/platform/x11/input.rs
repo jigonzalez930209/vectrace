@@ -123,6 +123,12 @@ impl X11Backend {
                 ToolbarAction::MinimizeToTray => {
                     self.set_hidden(conn, win_id, root, gc_id, canvas, toolbar, true)?;
                 }
+                ToolbarAction::ToggleAutostart => {
+                    match crate::platform::autostart::toggle() {
+                        Ok(enabled) => println!("Autostart {}", if enabled { "ON" } else { "OFF" }),
+                        Err(e) => println!("Failed to toggle autostart: {}", e),
+                    }
+                }
                 ToolbarAction::Exit => { /* handled in run() */ }
             }
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
@@ -297,7 +303,22 @@ impl X11Backend {
                 .map(|(t, _)| t.to_string());
             if self.hover_tooltip != new_tip {
                 self.hover_tooltip = new_tip;
-                self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                // Dirty only the toolbar + tooltip band (not the full screen).
+                let pad = (12.0 * self.scale_factor).ceil() as i16;
+                let tip_extra = (48.0 * self.scale_factor).ceil() as i16;
+                let x = (toolbar.x as i16 - pad).max(0);
+                let y = (toolbar.y as i16 - pad).max(0);
+                let w = ((toolbar.width as i16 + pad * 2) as u16).min(self.width.saturating_sub(x as u16));
+                let h = ((toolbar.height as i16 + tip_extra + pad * 2) as u16)
+                    .min(self.height.saturating_sub(y as u16));
+                self.redraw_rect(
+                    conn,
+                    win_id,
+                    gc_id,
+                    canvas,
+                    toolbar,
+                    Some(Rectangle { x, y, width: w, height: h }),
+                )?;
             }
         }
         Ok(())
@@ -413,14 +434,39 @@ impl X11Backend {
             return Ok(false);
         }
 
-        // Global hotkey: Ctrl+Alt+A (works even while click-through so the app below can keep typing)
+        // Global hotkey: Ctrl+Alt+A
+        // - If minimized to tray → restore overlay (toolbar visible)
+        // - Otherwise → toggle click-through
         if keycode_a > 0 && keycode == keycode_a && is_ctrl && is_alt {
             if self.tray_quick_crop {
                 return Ok(false);
             }
-            self.passthrough = !self.passthrough;
-            self.apply_passthrough(conn, win_id, root, toolbar)?;
-            self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+            if self.is_hidden {
+                self.set_hidden(conn, win_id, root, gc_id, canvas, toolbar, false)?;
+                println!("Global hotkey: restored overlay from tray (Ctrl+Alt+A)");
+            } else {
+                self.passthrough = !self.passthrough;
+                self.apply_passthrough(conn, win_id, root, toolbar)?;
+                self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
+                println!("Global hotkey: click-through = {}", self.passthrough);
+            }
+            return Ok(false);
+        }
+
+        // Escape → always minimize to tray while the overlay is mapped
+        // (works in active mode and click-through via dedicated Escape grab).
+        if !self.is_hidden && !self.tray_quick_crop && keysym == XK_ESCAPE {
+            canvas.cancel_current_stroke();
+            self.crop_start = None;
+            self.crop_current = None;
+            self.crop_drag_state = CropDragState::None;
+            if matches!(self.active_tool, Tool::SelectRegion) {
+                self.active_tool = Tool::default_pen();
+            }
+            self.show_settings_menu = false;
+            self.show_color_menu = false;
+            self.set_hidden(conn, win_id, root, gc_id, canvas, toolbar, true)?;
+            println!("Escape → minimized to system tray");
             return Ok(false);
         }
 
@@ -452,10 +498,6 @@ impl X11Backend {
                     let dirty = get_dirty_rect(canvas, self.width, self.height, None, None);
                     self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, dirty)?;
                 }
-                XK_ESCAPE => {
-                    canvas.cancel_current_stroke();
-                    self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
-                }
                 _ => {
                     if let Some(ch) = keysym_to_char(keysym) {
                         if let Some(stroke) = canvas.current_stroke_mut() {
@@ -468,16 +510,6 @@ impl X11Backend {
             }
         } else {
             match keysym {
-                XK_ESCAPE => {
-                    if self.crop_start.is_some() || matches!(self.active_tool, Tool::SelectRegion) {
-                        self.crop_start = None;
-                        self.crop_current = None;
-                        self.active_tool = Tool::default_pen();
-                        self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
-                    } else {
-                        return Ok(true); // signal "exit"
-                    }
-                }
                 XK_P_LOWER | XK_P_UPPER => {
                     let mut tool = Tool::default_pen();
                     if let Some(c) = self.active_tool.color() { tool.set_color(c); }
