@@ -5,7 +5,7 @@ use crate::platform::x11::CropDragState;
 use crate::ui::Toolbar;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    MapState, Rectangle, ClipOrdering, ConnectionExt as _, InputFocus, Time,
+    MapState, Rectangle, ClipOrdering, ConnectionExt as _,
 };
 use x11rb::protocol::shape::{SO as ShapeOp, SK as ShapeKind};
 use std::sync::mpsc::Receiver;
@@ -44,12 +44,16 @@ pub struct X11Backend {
     pub mouse_pos: (f32, f32),
     /// Keycodes grabbed on the root window while the overlay is active (XWayland-safe).
     pub overlay_keycodes: Vec<u8>,
+    /// Escape keycode kept grabbed while mapped (incl. click-through) → tray.
+    pub keycode_escape: u8,
     /// Tray "Save Region": crosshair overlay without toolbar; capture on mouse release.
     pub tray_quick_crop: bool,
     /// Cursor id for crosshair (0 = unset).
     pub crosshair_cursor: u32,
     /// Cached dim veil for fast crop dragging (avoids full-screen fill every motion).
     pub crop_veil: Option<tiny_skia::Pixmap>,
+    /// `base` with dim overlay baked in — used while dragging a toolbar crop.
+    pub crop_dimmed: Option<tiny_skia::Pixmap>,
 }
 
 impl X11Backend {
@@ -85,9 +89,11 @@ impl X11Backend {
             hover_tooltip: None,
             mouse_pos: (0.0, 0.0),
             overlay_keycodes: Vec::new(),
+            keycode_escape: 0,
             tray_quick_crop: false,
             crosshair_cursor: 0,
             crop_veil: None,
+            crop_dimmed: None,
         }
     }
 
@@ -126,45 +132,25 @@ impl X11Backend {
             );
             let _ = self.apply_passthrough(conn, win_id, root, toolbar);
         }
-        let desktop_opt = self.cached_desktop.clone();
 
-        if bg_mode == BackgroundMode::Transparent && desktop_opt.is_none() {
+        if bg_mode == BackgroundMode::Transparent && self.cached_desktop.is_none() {
             println!("Capture failed: desktop background unavailable (Transparent mode)");
             self.toast_notification = Some(ToastNotification::new("Capture failed (flash path disabled)", 3000));
             return;
         }
 
-        std::thread::spawn(move || {
-            let temp_pixmap = crate::core::compose_desktop_with_strokes(
-                desktop_opt,
-                &doc.strokes,
-                w,
-                h,
-                overlay_x,
-                overlay_y,
-                |pixmap| doc.render_background(pixmap),
-            );
-            match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
-                Ok((path, copied)) => {
-                    if copied {
-                        println!(
-                            "Full Screen saved {}x{} and copied to clipboard: {}",
-                            temp_pixmap.width(),
-                            temp_pixmap.height(),
-                            path
-                        );
-                    } else {
-                        println!(
-                            "Full Screen saved {}x{} to: {} (clipboard copy failed)",
-                            temp_pixmap.width(),
-                            temp_pixmap.height(),
-                            path
-                        );
-                    }
-                }
-                Err(e) => println!("Failed to save full screen: {}", e),
-            }
-        });
+        let desktop = self.cached_desktop.clone();
+        crate::platform::export_worker::submit_composed(
+            desktop,
+            doc.strokes,
+            w,
+            h,
+            overlay_x,
+            overlay_y,
+            bg_mode,
+            None,
+            "Full Screen",
+        );
 
         self.toast_notification = Some(ToastNotification::new("Saved + copied", 3000));
     }
@@ -197,10 +183,10 @@ impl X11Backend {
         if crop_w < 4 || crop_h < 4 { return; }
 
         let bg_mode = canvas.background_mode;
-        let doc = if include_annotations {
-            Some(canvas.snapshot())
+        let strokes = if include_annotations {
+            canvas.snapshot().strokes
         } else {
-            None
+            Vec::new()
         };
 
         let need_desktop = !include_annotations || bg_mode == BackgroundMode::Transparent;
@@ -227,53 +213,19 @@ impl X11Backend {
             return;
         }
 
-        std::thread::spawn(move || {
-            let strokes: &[crate::core::Stroke] = doc.as_ref().map(|d| d.strokes.as_slice()).unwrap_or(&[]);
-            let temp_pixmap = crate::core::compose_desktop_with_strokes(
-                desktop_opt,
-                strokes,
-                w,
-                h,
+        crate::platform::export_worker::submit(
+            crate::platform::export_worker::ExportJob::SaveCrop {
+                desktop: desktop_opt.map(std::sync::Arc::new),
+                strokes: strokes.into(),
+                width: w,
+                height: h,
                 overlay_x,
                 overlay_y,
-                |pixmap| {
-                    if let Some(ref doc) = doc {
-                        doc.render_background(pixmap);
-                    } else {
-                        pixmap.fill(tiny_skia::Color::BLACK);
-                    }
-                },
-            );
-
-            let crop = crate::core::map_overlay_crop_to_desktop(
-                (min_x, min_y, crop_w, crop_h),
-                w,
-                h,
-                overlay_x,
-                overlay_y,
-                temp_pixmap.width(),
-                temp_pixmap.height(),
-            );
-
-            match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, Some(crop)) {
-                Ok((path, copied)) => {
-                    if copied {
-                        println!(
-                            "Cropped Region ({}x{}) saved and copied to clipboard: {}",
-                            crop.2, crop.3, path
-                        );
-                    } else {
-                        println!(
-                            "Cropped Region ({}x{}) saved to: {} (clipboard copy failed)",
-                            crop.2, crop.3, path
-                        );
-                    }
-                }
-                Err(e) => {
-                    println!("Failed to save crop region: {}", e);
-                }
-            }
-        });
+                bg_mode,
+                solid_black_bg: !include_annotations,
+                overlay_crop: (min_x, min_y, crop_w, crop_h),
+            },
+        );
 
         self.toast_notification = Some(ToastNotification::new(
             format!("Saved Crop + copied ({}x{})", crop_w, crop_h),
@@ -352,8 +304,8 @@ impl X11Backend {
             println!("Hiding Vectrace overlay window to System Tray...");
             self.passthrough = true;
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
-            let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
-            let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
+            crate::platform::x11::window::ungrab_escape_key(conn, root, self.keycode_escape);
+            crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
             let _ = conn.unmap_window(win_id);
             let _ = conn.flush();
         } else {
@@ -361,15 +313,8 @@ impl X11Backend {
             let _ = conn.map_window(win_id);
             self.passthrough = false;
             self.completed_strokes_dirty = true;
-            self.cached_desktop = capture_desktop_background(
-                conn,
-                win_id,
-                root,
-                self.width,
-                self.height,
-                self.overlay_x,
-                self.overlay_y,
-            );
+            // Do not capture the desktop here — that belongs to Save only.
+            // A portal/ScreenCast on every tray Show freezes the desktop UX.
             self.redraw_rect(conn, win_id, gc_id, canvas, toolbar, None)?;
             self.apply_passthrough(conn, win_id, root, toolbar)?;
             crate::platform::x11::window::focus_x11_window(conn, root, win_id);
@@ -387,8 +332,8 @@ impl X11Backend {
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_hidden {
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
-            let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
-            let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
+            crate::platform::x11::window::ungrab_escape_key(conn, root, self.keycode_escape);
+            crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
             let offscreen_rect = [Rectangle { x: -32000, y: -32000, width: 1, height: 1 }];
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &offscreen_rect)?;
             conn.flush()?;
@@ -396,10 +341,13 @@ impl X11Backend {
         }
 
         if self.passthrough {
-            // Release keyboard so the app underneath can receive typing.
+            // Release tool keys so the app underneath can receive typing,
+            // but keep Escape grabbed so it always minimizes to tray.
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
-            let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
-            let _ = conn.set_input_focus(InputFocus::POINTER_ROOT, 0u32, Time::CURRENT_TIME);
+            crate::platform::x11::window::grab_escape_key(conn, root, self.keycode_escape);
+            // Give focus back to the app/dock under the pointer (not None — that
+            // freezes keyboard until Alt+Tab on GNOME/XWayland).
+            crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
             let mut rects = vec![Rectangle {
                 x: toolbar.x as i16,
                 y: toolbar.y as i16,
@@ -412,8 +360,8 @@ impl X11Backend {
                 rects.push(Rectangle {
                     x: menu_x as i16,
                     y: menu_y as i16,
-                    width: (260.0 * toolbar.scale_factor) as u16,
-                    height: (130.0 * toolbar.scale_factor) as u16,
+                    width: (crate::ui::toolbar::SETTINGS_MENU_W * toolbar.scale_factor) as u16,
+                    height: (crate::ui::toolbar::SETTINGS_MENU_H * toolbar.scale_factor) as u16,
                 });
             }
             if self.show_color_menu {
@@ -432,6 +380,7 @@ impl X11Backend {
             // Also grab tool keys on the root — helps on native X11; on XWayland
             // grabs may be ignored while a Wayland app holds the seat.
             crate::platform::x11::window::grab_overlay_keys(conn, root, &self.overlay_keycodes);
+            crate::platform::x11::window::grab_escape_key(conn, root, self.keycode_escape);
             let rect = Rectangle { x: 0, y: 0, width: self.width, height: self.height };
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &[rect])?;
         }
@@ -471,38 +420,14 @@ pub fn capture_desktop_background(
         let _ = conn.unmap_window(win_id);
         let _ = conn.flush();
         let _ = conn.get_input_focus().map(|c| c.reply());
-        // Give the compositor time to repaint without the overlay.
-        std::thread::sleep(std::time::Duration::from_millis(80));
+        // Brief settle so the compositor can repaint without the overlay.
+        // Hard cap: ≤10ms artificial delay before grab.
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let reply = conn.get_image(
-        x11rb::protocol::xproto::ImageFormat::Z_PIXMAP,
-        root,
-        overlay_x,
-        overlay_y,
-        w,
-        h,
-        !0,
-    ).ok().and_then(|c| c.reply().ok());
-
-    let res = if let Some(reply) = reply {
-        let data = reply.data;
-        let expected_len = (w as usize) * (h as usize) * 4;
-        if data.len() >= expected_len {
-            if let Some(mut pixmap) = tiny_skia::Pixmap::new(w as u32, h as u32) {
-                let rgba_data = pixmap.data_mut();
-                // BGRA -> RGBA conversion using chunks_exact for auto-vectorization
-                for (src_px, dst_px) in data.chunks_exact(4).zip(rgba_data.chunks_exact_mut(4)) {
-                    dst_px[0] = src_px[2]; // R <- B
-                    dst_px[1] = src_px[1]; // G
-                    dst_px[2] = src_px[0]; // B <- R
-                    dst_px[3] = 255;
-                }
-                Some(pixmap)
-            } else { None }
-        } else { None }
-    } else {
-        // Fallback for XWayland: ScreenCast portal / Mutter (native size, no squash).
+    // On XWayland, skip root GetImage (unreliable) and go straight to portal/Mutter.
+    let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let res = if on_wayland {
         match crate::platform::wayland::capture::portal::PortalClient::take_screenshot() {
             Ok(desktop_pixmap) => {
                 println!(
@@ -516,7 +441,58 @@ pub fn capture_desktop_background(
                 );
                 Some(desktop_pixmap)
             }
-            Err(e) => { println!("Desktop capture failed: {:?}", e); None }
+            Err(e) => {
+                println!("Desktop capture failed: {:?}", e);
+                None
+            }
+        }
+    } else if let Some(reply) = conn
+        .get_image(
+            x11rb::protocol::xproto::ImageFormat::Z_PIXMAP,
+            root,
+            overlay_x,
+            overlay_y,
+            w,
+            h,
+            !0,
+        )
+        .ok()
+        .and_then(|c| c.reply().ok())
+    {
+        let data = reply.data;
+        let expected_len = (w as usize) * (h as usize) * 4;
+        if data.len() >= expected_len {
+            tiny_skia::Pixmap::new(w as u32, h as u32).map(|mut pixmap| {
+                let rgba_data = pixmap.data_mut();
+                for (src_px, dst_px) in data.chunks_exact(4).zip(rgba_data.chunks_exact_mut(4)) {
+                    dst_px[0] = src_px[2];
+                    dst_px[1] = src_px[1];
+                    dst_px[2] = src_px[0];
+                    dst_px[3] = 255;
+                }
+                pixmap
+            })
+        } else {
+            None
+        }
+    } else {
+        match crate::platform::wayland::capture::portal::PortalClient::take_screenshot() {
+            Ok(desktop_pixmap) => {
+                println!(
+                    "Portal/Mutter capture {}x{} (overlay {}x{}+{}+{})",
+                    desktop_pixmap.width(),
+                    desktop_pixmap.height(),
+                    w,
+                    h,
+                    overlay_x,
+                    overlay_y
+                );
+                Some(desktop_pixmap)
+            }
+            Err(e) => {
+                println!("Desktop capture failed: {:?}", e);
+                None
+            }
         }
     };
 
