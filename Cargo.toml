@@ -1,6 +1,6 @@
 [package]
 name = "vectrace"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Vectrace Developers"]
 description = "Agnostic vector screen marker and drawing overlay for X11 and Wayland"
@@ -17,7 +17,7 @@ fontdue = "0.9"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.31", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-rustix = { version = "0.38", features = ["shm", "mm", "fs", "std"] }
+rustix = { version = "0.38", features = ["shm", "mm", "fs", "std", "event"] }
 ksni = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 zbus = "5.18"
