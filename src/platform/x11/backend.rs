@@ -23,6 +23,9 @@ pub struct X11Backend {
     pub is_dragging: bool,
     pub drag_offset_x: f32,
     pub drag_offset_y: f32,
+    /// True after we nudged the compositor (unmap/remap) for click-through focus.
+    /// Avoids repeating the flicker on every shape/menu update while already passing through.
+    pub passthrough_focus_released: bool,
     pub tray_rx: Option<Receiver<TrayEvent>>,
 
     // Persistent buffers to prevent per-frame allocations
@@ -72,6 +75,7 @@ impl X11Backend {
             is_dragging: false,
             drag_offset_x: 0.0,
             drag_offset_y: 0.0,
+            passthrough_focus_released: false,
             tray_rx: None,
             base_pixmap: None,
             active_pixmap: None,
@@ -303,15 +307,21 @@ impl X11Backend {
         if hidden {
             println!("Hiding Vectrace overlay window to System Tray...");
             self.passthrough = true;
+            self.passthrough_focus_released = true;
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             crate::platform::x11::window::ungrab_escape_key(conn, root, self.keycode_escape);
-            crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
+            crate::platform::x11::window::set_wm_input_hint(conn, win_id, false);
+            let _ = conn.ungrab_keyboard(x11rb::protocol::xproto::Time::CURRENT_TIME);
+            // Unmap (not focus-None): Mutter reassigns seat focus to apps/dock/tray.
             let _ = conn.unmap_window(win_id);
             let _ = conn.flush();
         } else {
             println!("Restoring Vectrace overlay window from System Tray...");
+            crate::platform::x11::window::set_wm_input_hint(conn, win_id, true);
+            crate::platform::x11::window::set_net_wm_user_time(conn, win_id, 1);
             let _ = conn.map_window(win_id);
             self.passthrough = false;
+            self.passthrough_focus_released = false;
             self.completed_strokes_dirty = true;
             // Do not capture the desktop here — that belongs to Save only.
             // A portal/ScreenCast on every tray Show freezes the desktop UX.
@@ -324,7 +334,7 @@ impl X11Backend {
     }
 
     pub fn apply_passthrough(
-        &self,
+        &mut self,
         conn: &impl Connection,
         win_id: u32,
         root: u32,
@@ -333,7 +343,8 @@ impl X11Backend {
         if self.is_hidden {
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             crate::platform::x11::window::ungrab_escape_key(conn, root, self.keycode_escape);
-            crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
+            let _ = conn.ungrab_keyboard(x11rb::protocol::xproto::Time::CURRENT_TIME);
+            self.passthrough_focus_released = true;
             let offscreen_rect = [Rectangle { x: -32000, y: -32000, width: 1, height: 1 }];
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &offscreen_rect)?;
             conn.flush()?;
@@ -345,9 +356,14 @@ impl X11Backend {
             // but keep Escape grabbed so it always minimizes to tray.
             crate::platform::x11::window::ungrab_overlay_keys(conn, root, &self.overlay_keycodes);
             crate::platform::x11::window::grab_escape_key(conn, root, self.keycode_escape);
-            // Give focus back to the app/dock under the pointer (not None — that
-            // freezes keyboard until Alt+Tab on GNOME/XWayland).
-            crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
+            // Only nudge once when entering click-through — unmap/remap is what
+            // actually returns GNOME seat focus (same mechanism as tray minimize).
+            if !self.passthrough_focus_released {
+                crate::platform::x11::window::release_keyboard_focus(conn, root, win_id);
+                self.passthrough_focus_released = true;
+            } else {
+                let _ = conn.ungrab_keyboard(x11rb::protocol::xproto::Time::CURRENT_TIME);
+            }
             let mut rects = vec![Rectangle {
                 x: toolbar.x as i16,
                 y: toolbar.y as i16,
@@ -376,6 +392,9 @@ impl X11Backend {
             }
             x11rb::protocol::shape::rectangles(conn, ShapeOp::SET, ShapeKind::INPUT, ClipOrdering::UNSORTED, win_id, 0, 0, &rects)?;
         } else {
+            self.passthrough_focus_released = false;
+            crate::platform::x11::window::set_wm_input_hint(conn, win_id, true);
+            crate::platform::x11::window::set_net_wm_user_time(conn, win_id, 1);
             crate::platform::x11::window::claim_keyboard(conn, root, win_id);
             // Also grab tool keys on the root — helps on native X11; on XWayland
             // grabs may be ignored while a Wayland app holds the seat.
