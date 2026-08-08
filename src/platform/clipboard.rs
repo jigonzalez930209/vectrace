@@ -1,40 +1,18 @@
-use arboard::{Clipboard, ImageData};
-use std::time::Duration;
+use tiny_skia::Pixmap;
 
-pub fn copy_pixmap_to_clipboard(pixmap: &tiny_skia::Pixmap) -> Result<(), String> {
+pub fn copy_pixmap_to_clipboard(pixmap: &Pixmap) -> Result<(), String> {
     let width = pixmap.width() as usize;
     let height = pixmap.height() as usize;
     if width == 0 || height == 0 {
         return Err("Cannot copy empty image to clipboard".into());
     }
-
-    let image = ImageData {
-        width,
-        height,
-        bytes: pixmap.data().to_vec().into(),
-    };
-
-    // On Linux the clipboard offer dies when the Clipboard is dropped. Keep a
-    // short-lived owner thread so GNOME's manager can see the image (~300ms).
-    std::thread::Builder::new()
-        .name("vectrace-clipboard".into())
-        .spawn(move || {
-            let Ok(mut clipboard) = Clipboard::new() else {
-                return;
-            };
-            if clipboard.set_image(image).is_ok() {
-                std::thread::sleep(Duration::from_millis(300));
-            }
-        })
-        .map_err(|e| format!("Failed to spawn clipboard thread: {}", e))?;
-
-    Ok(())
+    crate::platform::export_worker::copy_image_bytes(width, height, pixmap.data().to_vec())
 }
 
 /// Prepare export, save to Pictures, and copy to clipboard.
 /// Returns `(path, clipboard_ok)`.
 pub fn save_and_copy_pixmap(
-    pixmap: &tiny_skia::Pixmap,
+    pixmap: &Pixmap,
     crop_rect: Option<(u32, u32, u32, u32)>,
 ) -> Result<(String, bool), String> {
     let export = crate::core::export::prepare_export_pixmap(pixmap, crop_rect)?;
