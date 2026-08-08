@@ -302,15 +302,21 @@ pub fn render_crop_selection_ex(
 
     let label = format!("{:.0} × {:.0} px", rect_w, rect_h);
     let font_size = (12.0 * scale).round().max(1.0);
-    let label_y = if min_y - 24.0 * scale > 0.0 {
-        (min_y - 24.0 * scale).round()
+    let pad_x = 6.0 * scale;
+    let pad_y = 3.0 * scale;
+    let text_w = crate::core::render::measure_text_width(&label, font_size);
+    let text_h = font_size + 2.0 * scale;
+    let label_w = (text_w + pad_x * 2.0).ceil().max(1.0);
+    let label_h = (text_h + pad_y * 2.0).ceil().max(1.0);
+    let label_y = if min_y - label_h - 4.0 * scale > 0.0 {
+        (min_y - label_h - 4.0 * scale).round()
     } else {
         (min_y + 8.0 * scale).round()
     };
     let label_x = min_x.round();
 
     let mut bg_pb = PathBuilder::new();
-    if let Some(rect) = tiny_skia::Rect::from_xywh(label_x, label_y, label.len() as f32 * 7.5 * scale, 20.0 * scale) {
+    if let Some(rect) = tiny_skia::Rect::from_xywh(label_x, label_y, label_w, label_h) {
         bg_pb.push_rect(rect);
     }
     if let Some(bg_path) = bg_pb.finish() {
@@ -321,8 +327,8 @@ pub fn render_crop_selection_ex(
 
     render_text_to_pixmap(
         &label,
-        label_x + 4.0 * scale,
-        label_y + 3.0 * scale,
+        label_x + pad_x,
+        label_y + pad_y,
         font_size,
         Color::new(0, 240, 255, 255),
         BlendMode::Normal,
