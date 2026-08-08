@@ -52,6 +52,7 @@ pub struct WaylandState {
     
     pub shift_pressed: bool,
     pub ctrl_pressed: bool,
+    pub alt_pressed: bool,
     pub pending_key: Option<(u32, u32)>, // keycode, state
 }
 
@@ -80,6 +81,7 @@ impl WaylandState {
             last_button_time: 0,
             shift_pressed: false,
             ctrl_pressed: false,
+            alt_pressed: false,
             pending_key: None,
         }
     }
@@ -219,6 +221,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
             // Left Ctrl (29) / Right Ctrl (97) — Linux evdev codes
             if key == 29 || key == 97 {
                 state.ctrl_pressed = is_pressed == 1;
+            }
+            // Left Alt (56) / Right Alt (100)
+            if key == 56 || key == 100 {
+                state.alt_pressed = is_pressed == 1;
             }
             state.pending_key = Some((key, is_pressed));
         }
@@ -416,7 +422,7 @@ impl PlatformBackend for WaylandBackend {
         canvas.resize(width, height);
         canvas.set_scale_factor(self.scale_factor);
         println!("Wayland Layer-Shell overlay initialized: {}x{} (Scale: {:.1}x)", width, height, self.scale_factor);
-        println!("Controls: [Space] Click-Through  [P/H/L/A/R/O/K/N/E/T] Tools  [U] Undo  [Ctrl+R] Redo  [C] Clear  [ESC] Exit");
+        println!("Controls:\n  [Ctrl+Alt+A] Show from tray / Toggle Click-Through\n  [Space]      Toggle Click-Through\n  [P/H/L/A/R/O/K/N/E/T] Tools\n  [U]          Undo\n  [C]          Clear\n  [ESC]        Minimize to System Tray\n");
 
         let toolbar = Toolbar::new_with_scale(width as f32, self.scale_factor);
 
@@ -450,7 +456,7 @@ impl PlatformBackend for WaylandBackend {
 
         let mut prev_button_pressed = false;
 
-        apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+        apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
 
         loop {
             if state.should_exit {
@@ -464,15 +470,21 @@ impl PlatformBackend for WaylandBackend {
                     match tray_event {
                         TrayEvent::ToggleVisibility => {
                             self.is_hidden = !self.is_hidden;
-                            self.passthrough = self.is_hidden;
+                            if self.is_hidden {
+                                self.passthrough = true;
+                                self.show_settings_menu = false;
+                                self.show_color_menu = false;
+                            } else {
+                                self.passthrough = false;
+                            }
                             println!("System Tray Action: Toggle Visibility (is_hidden = {})", self.is_hidden);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
 
                         TrayEvent::ToggleSettingsMenu => {
                             self.show_settings_menu = !self.show_settings_menu;
                             println!("System Tray Action: Toggle Settings Menu = {}", self.show_settings_menu);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         TrayEvent::ToggleMonitorMode => {
                             self.monitor_mode = self.monitor_mode.toggle();
@@ -481,7 +493,7 @@ impl PlatformBackend for WaylandBackend {
                         TrayEvent::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
                             println!("System Tray Action: Toggle Passthrough = {}", self.passthrough);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
 
                         TrayEvent::CycleBackground => {
@@ -510,6 +522,7 @@ impl PlatformBackend for WaylandBackend {
                                 state.layer_surface.as_ref(),
                                 state.xdg_toplevel.as_ref(),
                                 self.passthrough,
+                                self.is_hidden,
                                 self.show_settings_menu,
                                 self.show_color_menu,
                                 &toolbar,
@@ -530,6 +543,7 @@ impl PlatformBackend for WaylandBackend {
                                 state.layer_surface.as_ref(),
                                 state.xdg_toplevel.as_ref(),
                                 self.passthrough,
+                                self.is_hidden,
                                 self.show_settings_menu,
                                 self.show_color_menu,
                                 &toolbar,
@@ -576,13 +590,13 @@ impl PlatformBackend for WaylandBackend {
                             self.active_tool.set_color(color);
                             self.show_color_menu = false;
                             println!("Set color: {:?}", color);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleColorMenu => {
                             self.show_color_menu = !self.show_color_menu;
                             self.show_settings_menu = false;
                             println!("Toggled Color Menu: {}", self.show_color_menu);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleBackgroundMode => {
                             let mode = canvas.cycle_background_mode();
@@ -609,6 +623,7 @@ impl PlatformBackend for WaylandBackend {
                                 state.layer_surface.as_ref(),
                                 state.xdg_toplevel.as_ref(),
                                 self.passthrough,
+                                self.is_hidden,
                                 self.show_settings_menu,
                                 self.show_color_menu,
                                 &toolbar,
@@ -618,12 +633,12 @@ impl PlatformBackend for WaylandBackend {
                         ToolbarAction::TogglePassthrough => {
                             self.passthrough = !self.passthrough;
                             println!("Toggled Click-Through: {}", self.passthrough);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleSettingsMenu => {
                             self.show_settings_menu = !self.show_settings_menu;
                             println!("Toggled Settings Menu: {}", self.show_settings_menu);
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
                         ToolbarAction::ToggleMonitorMode => {
                             self.monitor_mode = self.monitor_mode.toggle();
@@ -632,10 +647,17 @@ impl PlatformBackend for WaylandBackend {
                         ToolbarAction::MinimizeToTray => {
                             self.is_hidden = true;
                             self.passthrough = true;
+                            self.show_settings_menu = false;
+                            self.show_color_menu = false;
                             println!("Minimized overlay to System Tray.");
-                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                            apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                         }
-
+                        ToolbarAction::ToggleAutostart => {
+                            match crate::platform::autostart::toggle() {
+                                Ok(enabled) => println!("Autostart {}", if enabled { "ON" } else { "OFF" }),
+                                Err(e) => println!("Failed to toggle autostart: {}", e),
+                            }
+                        }
 
                         ToolbarAction::Exit => {
                             println!("Exiting via toolbar...");
@@ -691,10 +713,28 @@ impl PlatformBackend for WaylandBackend {
 
             if let Some((key_code, is_pressed)) = state.pending_key.take() {
                 if is_pressed == 1 {
-                    // Click-through: keyboard interactivity is None, but ignore
-                    // shortcuts if any key still arrives so the app below can type.
-                    if self.passthrough {
-                        // allow nothing — Space toggle is via toolbar while click-through
+                    // Global-ish: Ctrl+Alt+A → restore from tray or toggle click-through
+                    if key_code == 30 && state.ctrl_pressed && state.alt_pressed {
+                        if self.is_hidden {
+                            self.is_hidden = false;
+                            self.passthrough = false;
+                            println!("Hotkey: restored overlay from tray (Ctrl+Alt+A)");
+                        } else {
+                            self.passthrough = !self.passthrough;
+                            println!("Hotkey: click-through = {}", self.passthrough);
+                        }
+                        apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                    } else if key_code == 1 {
+                        // Escape → always minimize to tray
+                        canvas.cancel_current_stroke();
+                        self.show_settings_menu = false;
+                        self.show_color_menu = false;
+                        self.is_hidden = true;
+                        self.passthrough = true;
+                        println!("Escape → minimized to system tray");
+                        apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                    } else if self.passthrough || self.is_hidden {
+                        // ignore local shortcuts while hidden / click-through
                     } else {
                     let is_typing_text = matches!(self.active_tool, Tool::Text { .. });
 
@@ -725,10 +765,6 @@ impl PlatformBackend for WaylandBackend {
                                     }
                                 }
                             }
-                            1 => { // Escape
-                                canvas.cancel_current_stroke();
-                                println!("Cancelled text on Wayland");
-                            }
                             _ => {
                                 if let Some(ch) = evdev_key_to_char(key_code, state.shift_pressed) {
                                     if let Some(stroke) = canvas.current_stroke_mut() {
@@ -741,10 +777,6 @@ impl PlatformBackend for WaylandBackend {
                         }
                     } else {
                         match key_code {
-                            1 => { // Escape
-                                println!("Exiting...");
-                                break;
-                            }
                             25 => { // P - Pencil
                                 let mut tool = Tool::default_pen();
                                 if let Some(c) = self.active_tool.color() { tool.set_color(c); }
@@ -822,6 +854,7 @@ impl PlatformBackend for WaylandBackend {
                                     state.layer_surface.as_ref(),
                                     state.xdg_toplevel.as_ref(),
                                     self.passthrough,
+                                    self.is_hidden,
                                     self.show_settings_menu,
                                     self.show_color_menu,
                                     &toolbar,
@@ -831,12 +864,12 @@ impl PlatformBackend for WaylandBackend {
                             50 => { // M - Minimize
                                 self.is_hidden = true;
                                 self.passthrough = true;
-                                apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                                apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                             }
                             57 => { // Space
                                 self.passthrough = !self.passthrough;
                                 println!("Toggled Click-Through: {}", self.passthrough);
-                                apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
+                                apply_wayland_passthrough(&compositor, &surface, state.layer_surface.as_ref(), state.xdg_toplevel.as_ref(), self.passthrough, self.is_hidden, self.show_settings_menu, self.show_color_menu, &toolbar, &qh);
                             }
                             48 => { // B
                                 let mode = canvas.cycle_background_mode();
@@ -859,25 +892,29 @@ impl PlatformBackend for WaylandBackend {
             }
 
             if self.is_hidden {
-                // Keep tray-minimized surface empty + non-interactive.
-                base_pixmap.fill(tiny_skia::Color::TRANSPARENT);
-            } else {
-                canvas.render_background(&mut base_pixmap);
-                canvas.render_completed_strokes(&mut base_pixmap);
-                canvas.render_current_stroke(&mut base_pixmap);
-                toolbar.draw(
-                    &mut base_pixmap,
-                    self.active_tool,
-                    self.passthrough,
-                    canvas.background_mode,
-                    self.show_settings_menu,
-                    self.show_color_menu,
-                    self.monitor_mode,
-                    false,
-                    None,
-                );
+                // Tray-minimized: skip paint/swizzle; wait for seat/tray events only.
+                surface.attach(None, 0, 0);
+                surface.commit();
+                conn.flush()?;
+                event_queue.blocking_dispatch(&mut state)?;
+                continue;
             }
 
+            canvas.render_background(&mut base_pixmap);
+            canvas.render_completed_strokes(&mut base_pixmap);
+            canvas.render_current_stroke(&mut base_pixmap);
+            toolbar.draw(
+                &mut base_pixmap,
+                self.active_tool,
+                self.passthrough,
+                canvas.background_mode,
+                self.show_settings_menu,
+                self.show_color_menu,
+                self.monitor_mode,
+                false,
+                None,
+                crate::platform::autostart::is_enabled(),
+            );
 
             let shm_slice = unsafe {
                 std::slice::from_raw_parts_mut(mmap as *mut u8, buffer_size)
@@ -892,12 +929,7 @@ impl PlatformBackend for WaylandBackend {
                 shm_slice[s + 3] = src[s + 3]; // A
             }
 
-
-            if self.is_hidden {
-                surface.attach(None, 0, 0);
-            } else {
-                surface.attach(Some(&wl_buf), 0, 0);
-            }
+            surface.attach(Some(&wl_buf), 0, 0);
             surface.damage_buffer(0, 0, width as i32, height as i32);
             surface.commit();
 
@@ -919,11 +951,24 @@ fn apply_wayland_passthrough(
     layer_surface: Option<&ZwlrLayerSurfaceV1>,
     _xdg_toplevel: Option<&XdgToplevel>,
     passthrough: bool,
+    is_hidden: bool,
     show_settings_menu: bool,
     show_color_menu: bool,
     toolbar: &Toolbar,
     qh: &QueueHandle<WaylandState>,
 ) {
+    if is_hidden {
+        // Tray-minimized: no pointer hits, no keyboard steal.
+        let region = compositor.create_region(qh, ());
+        surface.set_input_region(Some(&region));
+        region.destroy();
+        if let Some(ls) = layer_surface {
+            ls.set_keyboard_interactivity(KeyboardInteractivity::None);
+        }
+        surface.commit();
+        return;
+    }
+
     if passthrough {
         // Pointer hits only the toolbar/menus so clicks reach apps underneath.
         let region = compositor.create_region(qh, ());
@@ -943,8 +988,8 @@ fn apply_wayland_passthrough(
         if show_settings_menu {
             let menu_x = toolbar.x + toolbar.settings_btn_logical_x() * toolbar.scale_factor;
             let menu_y = toolbar.y + toolbar.height + 6.0 * toolbar.scale_factor;
-            let menu_w = 240.0 * toolbar.scale_factor;
-            let menu_h = 130.0 * toolbar.scale_factor;
+            let menu_w = crate::ui::toolbar::SETTINGS_MENU_W * toolbar.scale_factor;
+            let menu_h = crate::ui::toolbar::SETTINGS_MENU_H * toolbar.scale_factor;
             region.add(menu_x as i32, menu_y as i32, menu_w as i32, menu_h as i32);
         }
         surface.set_input_region(Some(&region));
@@ -981,26 +1026,14 @@ fn trigger_wayland_save_full(
     surface.attach(None, 0, 0);
     surface.commit();
     let _ = event_queue.roundtrip(state);
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // ≤10ms for compositor to drop the buffer before grab.
+    std::thread::sleep(std::time::Duration::from_millis(10));
 
-    // If the user minimized to tray, keep the surface buffer-less so we do not
-    // resurrect a fullscreen overlay that blocks the desktop.
-    if !stay_hidden {
-        surface.attach(Some(wl_buf), 0, 0);
-        surface.damage(0, 0, width as i32, height as i32);
-        surface.commit();
-        let _ = event_queue.roundtrip(state);
-    }
-
-    std::thread::spawn(move || {
-        let captured = if bg_mode == crate::core::BackgroundMode::Transparent {
-            Some(crate::platform::wayland::capture::portal::PortalClient::take_screenshot())
-        } else {
-            None
-        };
-
-        let desktop = match captured {
-            Some(Ok(desktop_pixmap)) => {
+    // Capture while still detached — remapping first made the overlay appear in shots
+    // and pushed the real grab hundreds of ms later.
+    let desktop = if bg_mode == crate::core::BackgroundMode::Transparent {
+        match crate::platform::wayland::capture::portal::PortalClient::take_screenshot() {
+            Ok(desktop_pixmap) => {
                 println!(
                     "Captured desktop background ({}x{})! overlay was {}x{}",
                     desktop_pixmap.width(),
@@ -1010,47 +1043,47 @@ fn trigger_wayland_save_full(
                 );
                 Some(desktop_pixmap)
             }
-            Some(Err(e)) => {
+            Err(e) => {
                 println!(
                     "Capture failed ({:?}); refusing to save empty Transparent snapshot",
                     e
                 );
-                return;
+                None
             }
-            None => None,
-        };
-
-        let temp_pixmap = crate::core::compose_desktop_with_strokes(
-            desktop,
-            &doc.strokes,
-            width,
-            height,
-            0,
-            0,
-            |pixmap| doc.render_background(pixmap),
-        );
-
-        match crate::platform::clipboard::save_and_copy_pixmap(&temp_pixmap, None) {
-            Ok((path, copied)) => {
-                if copied {
-                    println!(
-                        "Saved Full Screen {}x{} and copied to clipboard: {}",
-                        temp_pixmap.width(),
-                        temp_pixmap.height(),
-                        path
-                    );
-                } else {
-                    println!(
-                        "Saved Full Screen {}x{} to: {} (clipboard copy failed)",
-                        temp_pixmap.width(),
-                        temp_pixmap.height(),
-                        path
-                    );
-                }
-            }
-            Err(err) => println!("Failed to save image file: {}", err),
         }
-    });
+    } else {
+        None
+    };
+
+    if bg_mode == crate::core::BackgroundMode::Transparent && desktop.is_none() {
+        // Restore UI even on failure.
+        if !stay_hidden {
+            surface.attach(Some(wl_buf), 0, 0);
+            surface.damage(0, 0, width as i32, height as i32);
+            surface.commit();
+            let _ = event_queue.roundtrip(state);
+        }
+        return;
+    }
+
+    if !stay_hidden {
+        surface.attach(Some(wl_buf), 0, 0);
+        surface.damage(0, 0, width as i32, height as i32);
+        surface.commit();
+        let _ = event_queue.roundtrip(state);
+    }
+
+    crate::platform::export_worker::submit_composed(
+        desktop,
+        doc.strokes,
+        width,
+        height,
+        0,
+        0,
+        bg_mode,
+        None,
+        "Full Screen",
+    );
 }
 
 
