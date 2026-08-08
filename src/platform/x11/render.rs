@@ -122,7 +122,9 @@ pub fn compute_crop_dirty_rect(
         return None;
     }
 
+    // Handles (~8px) + size label above the rect (~28px).
     let pad = (16.0 * scale.max(1.0)).ceil();
+    let label_pad = (32.0 * scale.max(1.0)).ceil();
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
@@ -148,7 +150,7 @@ pub fn compute_crop_dirty_rect(
     }
 
     let x1 = (min_x - pad).floor().max(0.0) as i16;
-    let y1 = (min_y - pad).floor().max(0.0) as i16;
+    let y1 = (min_y - label_pad).floor().max(0.0) as i16;
     let x2 = (max_x + pad).ceil().min(screen_w as f32) as i16;
     let y2 = (max_y + pad).ceil().min(screen_h as f32) as i16;
     Some(Rectangle {
@@ -182,6 +184,7 @@ impl X11Backend {
             self.base_pixmap = Some(tiny_skia::Pixmap::new(w, h).unwrap());
             self.active_pixmap = Some(tiny_skia::Pixmap::new(w, h).unwrap());
             self.crop_veil = None;
+            self.crop_dimmed = None;
             self.completed_strokes_dirty = true;
         }
 
@@ -201,6 +204,14 @@ impl X11Backend {
             return self.redraw_tray_quick_crop(conn, win_id, gc_id, rx, ry, rw, rh);
         }
 
+        // Fast path: toolbar crop drag — skip toolbar/stroke compositing; blit dimmed base.
+        if self.crop_drag_state != crate::platform::x11::CropDragState::None
+            && self.crop_start.is_some()
+            && self.crop_current.is_some()
+        {
+            return self.redraw_toolbar_crop_drag(conn, win_id, gc_id, canvas, rx, ry, rw, rh);
+        }
+
         let base = self.base_pixmap.as_mut().unwrap();
         let active = self.active_pixmap.as_mut().unwrap();
 
@@ -208,6 +219,7 @@ impl X11Backend {
             canvas.render_background(base);
             canvas.render_completed_strokes(base);
             self.completed_strokes_dirty = false;
+            self.crop_dimmed = None;
             active.data_mut().copy_from_slice(base.data());
         } else {
             // Restore only the dirty region from the base layer
@@ -239,6 +251,18 @@ impl X11Backend {
             toolbar.tooltip_for_hover(self.mouse_pos.0, self.mouse_pos.1, has_crop_selection)
                 .map(|(_, pos)| (tip, pos))
         });
+
+        // Toast under the toolbar band (below tooltip row) and under tooltips in z-order.
+        if let Some(ref toast) = self.toast_notification {
+            if !toast.is_expired() {
+                // Tooltips sit at toolbar.bottom + 6; keep toast one row below that.
+                let below_y = toolbar.y + toolbar.height + 36.0 * self.scale_factor;
+                toast.draw(active, self.width as f32, self.scale_factor, below_y);
+            } else {
+                self.toast_notification = None;
+            }
+        }
+
         if !self.is_hidden {
             toolbar.draw(
                 active,
@@ -250,6 +274,7 @@ impl X11Backend {
                 self.monitor_mode,
                 has_crop_selection,
                 hover_tooltip,
+                crate::platform::autostart::is_enabled(),
             );
         } else {
             active.fill(tiny_skia::Color::TRANSPARENT);
@@ -291,14 +316,6 @@ impl X11Backend {
                 self.scale_factor,
                 false,
             );
-        }
-
-        if let Some(ref toast) = self.toast_notification {
-            if !toast.is_expired() {
-                toast.draw(active, self.width as f32, self.scale_factor);
-            } else {
-                self.toast_notification = None;
-            }
         }
 
         // PERFORMANCE: RGBA->BGRA into the reusable x11_pixels scratch (no per-frame alloc).
@@ -355,6 +372,130 @@ impl X11Backend {
             veil.fill_rect(r, &paint, tiny_skia::Transform::identity(), None);
         }
         self.crop_veil = Some(veil);
+    }
+
+    fn ensure_crop_dimmed(&mut self, canvas: &mut Canvas) {
+        let w = self.width as u32;
+        let h = self.height as u32;
+        if self.completed_strokes_dirty || self.base_pixmap.is_none() {
+            let base = self.base_pixmap.get_or_insert_with(|| tiny_skia::Pixmap::new(w, h).unwrap());
+            canvas.render_background(base);
+            canvas.render_completed_strokes(base);
+            self.completed_strokes_dirty = false;
+            self.crop_dimmed = None;
+        }
+        let needs = match self.crop_dimmed.as_ref() {
+            Some(v) => v.width() != w || v.height() != h,
+            None => true,
+        };
+        if !needs {
+            return;
+        }
+        let base = self.base_pixmap.as_ref().unwrap();
+        let mut dimmed = tiny_skia::Pixmap::new(w, h).unwrap();
+        dimmed.data_mut().copy_from_slice(base.data());
+        let mut dim = tiny_skia::Paint::default();
+        dim.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 110));
+        if let Some(r) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
+            dimmed.fill_rect(r, &dim, tiny_skia::Transform::identity(), None);
+        }
+        self.crop_dimmed = Some(dimmed);
+    }
+
+    /// Toolbar crop drag: blit pre-dimmed base into the dirty rect, punch hole, draw grips.
+    /// Skips toolbar/stroke re-render — the big win vs full `redraw_rect` while resizing.
+    fn redraw_toolbar_crop_drag(
+        &mut self,
+        conn: &impl Connection,
+        win_id: u32,
+        gc_id: u32,
+        canvas: &mut Canvas,
+        rx: u32,
+        ry: u32,
+        rw: u32,
+        rh: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let w = self.width as u32;
+        self.ensure_crop_dimmed(canvas);
+
+        let active = self.active_pixmap.as_mut().unwrap();
+        let dimmed = self.crop_dimmed.as_ref().unwrap();
+        let base = self.base_pixmap.as_ref().unwrap();
+
+        for row in 0..rh {
+            let start = ((ry + row) * w + rx) as usize * 4;
+            let len = rw as usize * 4;
+            active.data_mut()[start..start + len]
+                .copy_from_slice(&dimmed.data()[start..start + len]);
+        }
+
+        if let (Some((sx, sy)), Some((cx, cy))) = (self.crop_start, self.crop_current) {
+            let min_x = sx.min(cx);
+            let min_y = sy.min(cy);
+            let max_x = sx.max(cx);
+            let max_y = sy.max(cy);
+            let hole_x0 = min_x.max(rx as f32);
+            let hole_y0 = min_y.max(ry as f32);
+            let hole_x1 = max_x.min((rx + rw) as f32);
+            let hole_y1 = max_y.min((ry + rh) as f32);
+            if hole_x1 > hole_x0 && hole_y1 > hole_y0 {
+                let hx = hole_x0 as u32;
+                let hy = hole_y0 as u32;
+                let hw = (hole_x1 - hole_x0) as u32;
+                let hh = (hole_y1 - hole_y0) as u32;
+                for row in 0..hh {
+                    let src_start = ((hy + row) * w + hx) as usize * 4;
+                    let len = hw as usize * 4;
+                    active.data_mut()[src_start..src_start + len]
+                        .copy_from_slice(&base.data()[src_start..src_start + len]);
+                }
+            }
+            crate::core::export::render_crop_selection_ex(
+                active,
+                sx,
+                sy,
+                cx - sx,
+                cy - sy,
+                self.scale_factor,
+                false,
+            );
+        }
+
+        let needed = (rw * rh * 4) as usize;
+        if self.x11_pixels.len() < needed {
+            self.x11_pixels.resize(needed, 0);
+        }
+        {
+            let src = active.data();
+            let dst = &mut self.x11_pixels[..needed];
+            for row in 0..rh {
+                let src_row_start = ((ry + row) * w + rx) as usize * 4;
+                let dst_row_start = (row * rw) as usize * 4;
+                let src_row = &src[src_row_start..src_row_start + rw as usize * 4];
+                let dst_row = &mut dst[dst_row_start..dst_row_start + rw as usize * 4];
+                for (src_px, dst_px) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                    dst_px[0] = src_px[2];
+                    dst_px[1] = src_px[1];
+                    dst_px[2] = src_px[0];
+                    dst_px[3] = src_px[3];
+                }
+            }
+        }
+
+        conn.put_image(
+            ImageFormat::Z_PIXMAP,
+            win_id,
+            gc_id,
+            rw as u16,
+            rh as u16,
+            rx as i16,
+            ry as i16,
+            0,
+            32,
+            &self.x11_pixels[..needed],
+        )?;
+        conn.flush()?;
+        Ok(())
     }
 
     /// Tray region-capture present path: only touch the dirty rect.
