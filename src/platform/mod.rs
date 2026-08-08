@@ -1,9 +1,11 @@
 pub mod x11;
 pub mod wayland;
 pub mod tray;
+pub mod autostart;
 pub mod detection;
 pub mod fallback;
 pub mod clipboard;
+pub mod export_worker;
 
 pub trait PlatformBackend {
     fn run(&mut self, canvas: &mut crate::core::Canvas) -> Result<(), Box<dyn std::error::Error>>;
