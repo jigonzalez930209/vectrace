@@ -179,10 +179,13 @@ impl PlatformBackend for X11Backend {
         };
 
         let mut keycode_a = 0u8;
+        let mut keycode_escape = 0u8;
         for kc in min_keycode..=max_keycode {
             let ks = keycode_to_keysym(kc, 0);
-            if ks == 0x0061 || ks == 0x0041 { keycode_a = kc; break; }
+            if ks == 0x0061 || ks == 0x0041 { keycode_a = kc; }
+            if ks == 0xff1b { keycode_escape = kc; } // XK_Escape
         }
+        self.keycode_escape = keycode_escape;
 
         self.overlay_keycodes = window::collect_overlay_keycodes(
             min_keycode,
@@ -195,12 +198,24 @@ impl PlatformBackend for X11Backend {
             window::grab_global_hotkeys(&conn, screen.root, keycode_a);
             println!("Registered Global Daemon Shortcut: [Ctrl+Alt+A]");
         }
+        if keycode_escape > 0 {
+            window::grab_escape_key(&conn, screen.root, keycode_escape);
+            println!("Registered Escape → System Tray");
+        }
         println!(
             "Registered {} overlay key grabs (XWayland-safe tool shortcuts)",
             self.overlay_keycodes.len()
         );
 
-        println!("Controls:\n  [Ctrl+Alt+A] Global Toggle Active/Passthrough\n  [Space]      Toggle Click-Through\n  [P/H/L/A/R/O/K/N/E/T] Tools\n  [U]          Undo\n  [Ctrl+R]     Redo\n  [C]          Clear canvas\n  [B]          Toggle Background\n  [ESC]        Exit\n");
+        println!("Controls:\n  [Ctrl+Alt+A] Show from tray / Toggle Click-Through\n  [Space]      Toggle Click-Through\n  [P/H/L/A/R/O/K/N/E/T] Tools\n  [U]          Undo\n  [Ctrl+R]     Redo\n  [C]          Clear canvas\n  [B]          Toggle Background\n  [ESC]        Minimize to System Tray\n");
+
+        // Pre-warm Mutter ScreenCast so the first Save is not a ~4s cold start.
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            match crate::platform::wayland::capture::mutter_ensure_warm() {
+                Ok(()) => println!("ScreenCast session pre-warmed (fast screenshots ready)"),
+                Err(e) => println!("ScreenCast pre-warm skipped: {:?}", e),
+            }
+        }
 
         self.apply_passthrough(&conn, win_id, screen.root, &toolbar)?;
         self.completed_strokes_dirty = true;
@@ -266,7 +281,18 @@ impl PlatformBackend for X11Backend {
             };
 
             if event.is_none() {
-                std::thread::sleep(std::time::Duration::from_millis(16));
+                // Wait on the X11 FD instead of spinning with sleep(16).
+                // Short timeout keeps laser decay + tray polling responsive.
+                let laser_active = canvas.current_stroke().map_or(false, |s| {
+                    s.stroke_type == crate::core::StrokeType::Laser && !s.points.is_empty()
+                });
+                let timeout_ms = if laser_active { 16i32 } else { 50i32 };
+                use std::os::fd::AsFd;
+                let mut fds = [rustix::event::PollFd::from_borrowed_fd(
+                    conn.stream().as_fd(),
+                    rustix::event::PollFlags::IN,
+                )];
+                let _ = rustix::event::poll(&mut fds, timeout_ms);
                 if let Some(ref s) = canvas.current_stroke() {
                     if s.stroke_type == crate::core::StrokeType::Laser && !s.points.is_empty() {
                         let dirty_rect = render::get_dirty_rect(canvas, self.width, self.height, None, None);
