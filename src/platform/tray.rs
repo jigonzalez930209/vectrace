@@ -1,6 +1,8 @@
 use ksni::{Tray, TrayMethods, MenuItem};
-use ksni::menu::StandardItem;
+use ksni::menu::{CheckmarkItem, StandardItem};
 use std::sync::{mpsc::Sender, OnceLock};
+
+use crate::platform::autostart;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrayEvent {
@@ -17,6 +19,7 @@ pub enum TrayEvent {
 
 pub struct VectraceTray {
     tx: Sender<TrayEvent>,
+    autostart_enabled: bool,
 }
 
 const LOGO_SVG: &[u8] = include_bytes!("../../assets/vectrace.svg");
@@ -59,6 +62,16 @@ fn create_vectrace_icon(size: i32) -> ksni::Icon {
     }
 }
 
+fn tray_icon_pixmaps() -> &'static Vec<ksni::Icon> {
+    static ICONS: OnceLock<Vec<ksni::Icon>> = OnceLock::new();
+    ICONS.get_or_init(|| {
+        [16, 22, 24, 32, 48, 64]
+            .into_iter()
+            .map(create_vectrace_icon)
+            .collect()
+    })
+}
+
 impl Tray for VectraceTray {
     fn id(&self) -> String {
         "vectrace-screen-marker".to_string()
@@ -75,14 +88,7 @@ impl Tray for VectraceTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![
-            create_vectrace_icon(16),
-            create_vectrace_icon(22),
-            create_vectrace_icon(24),
-            create_vectrace_icon(32),
-            create_vectrace_icon(48),
-            create_vectrace_icon(64),
-        ]
+        tray_icon_pixmaps().clone()
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -162,6 +168,26 @@ impl Tray for VectraceTray {
                 }),
                 ..Default::default()
             }.into(),
+            CheckmarkItem {
+                label: "Start on Login".into(),
+                checked: self.autostart_enabled,
+                activate: Box::new(|tray: &mut Self| {
+                    match autostart::toggle() {
+                        Ok(enabled) => {
+                            tray.autostart_enabled = enabled;
+                            println!(
+                                "System Tray Action: Autostart {}",
+                                if enabled { "ON" } else { "OFF" }
+                            );
+                        }
+                        Err(e) => {
+                            println!("Failed to toggle autostart: {}", e);
+                            tray.autostart_enabled = autostart::is_enabled();
+                        }
+                    }
+                }),
+                ..Default::default()
+            }.into(),
             MenuItem::Separator,
             StandardItem {
                 label: "Quit Vectrace".into(),
@@ -187,7 +213,10 @@ impl Tray for VectraceTray {
 }
 
 pub fn spawn_tray(tx: Sender<TrayEvent>) {
-    let tray = VectraceTray { tx };
+    let tray = VectraceTray {
+        tx,
+        autostart_enabled: autostart::is_enabled(),
+    };
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
