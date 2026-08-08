@@ -1,5 +1,5 @@
 use crate::core::{Tool, Color, BlendMode, BackgroundMode, MonitorMode, render_text_to_pixmap};
-use crate::ui::toolbar::{Toolbar, ToolbarLayout, layout, BAR_H, BTN_H, TOOL_BTN, ACTION_BTN_W, COLOR_BTN_W};
+use crate::ui::toolbar::{Toolbar, ToolbarLayout, layout, BAR_H, BTN_H, TOOL_BTN, ACTION_BTN_W, COLOR_BTN_W, SETTINGS_MENU_W, SETTINGS_MENU_H};
 use crate::ui::toolbar_icons::{draw_tool_icon, draw_action_icon};
 
 impl Toolbar {
@@ -14,6 +14,7 @@ impl Toolbar {
         monitor_mode: MonitorMode,
         has_crop_selection: bool,
         hover_tooltip: Option<(&str, (f32, f32))>,
+        autostart_enabled: bool,
     ) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
@@ -144,25 +145,27 @@ impl Toolbar {
             self.draw_color_menu(pixmap);
         }
         if show_settings_menu {
-            self.draw_settings_menu(pixmap, passthrough, bg_mode, monitor_mode);
+            self.draw_settings_menu(pixmap, passthrough, bg_mode, monitor_mode, autostart_enabled);
         }
 
         if let Some((text, (tx, ty))) = hover_tooltip {
             let font_size = (12.0 * scale).round().max(1.0);
-            let padding_x = 10.0 * scale;
-            let padding_y = 6.0 * scale;
+            // Equal inset on all sides relative to the actual ink bounds.
+            let pad = 8.0 * scale;
 
-            // Calculate exact text pixel width using system font metrics
-            let text_w = if let Some(font) = crate::core::render::get_system_font() {
-                text.chars().map(|ch| font.rasterize(ch, font_size).0.advance_width).sum::<f32>()
-            } else {
-                text.len() as f32 * (font_size * 0.6)
-            };
+            let (text_w, ink_top, ink_bottom) =
+                crate::core::render::measure_text_ink(text, font_size);
+            let ink_h = (ink_bottom - ink_top).max(1.0);
 
-            let box_w = (text_w + padding_x * 2.0).round();
-            let box_h = (font_size + padding_y * 2.0).round();
-            let box_x = (tx - box_w / 2.0).round();
+            let box_w = (text_w + pad * 2.0).round().max(1.0);
+            let box_h = (ink_h + pad * 2.0).round().max(1.0);
+            let mut box_x = (tx - box_w / 2.0).round();
             let box_y = ty.round();
+
+            // Keep tooltip on-screen horizontally.
+            box_x = box_x
+                .max(2.0)
+                .min((pixmap.width() as f32 - box_w - 2.0).max(2.0));
 
             let mut tbpb = PathBuilder::new();
             self.add_rounded_rect(&mut tbpb, box_x, box_y, box_w, box_h, 6.0 * scale);
@@ -179,8 +182,9 @@ impl Toolbar {
                 pixmap.stroke_path(&tbpath, &stroke_paint, &stroke, Transform::identity(), None);
             }
 
-            let text_x = (box_x + padding_x).round();
-            let text_y = (box_y + padding_y).round();
+            // Equal pad L/R/T/B around ink: start_y so ink_top lands at box_y + pad.
+            let text_x = box_x + ((box_w - text_w) * 0.5).round();
+            let text_y = box_y + pad - ink_top;
 
             render_text_to_pixmap(
                 text,
@@ -314,6 +318,7 @@ impl Toolbar {
         passthrough: bool,
         bg_mode: BackgroundMode,
         monitor_mode: MonitorMode,
+        autostart_enabled: bool,
     ) {
         use tiny_skia::{PathBuilder, Paint, Stroke, Transform};
 
@@ -321,8 +326,8 @@ impl Toolbar {
         let lay = layout();
         let menu_x = self.x + lay.settings_menu_x() * scale;
         let menu_y = self.y + self.height + 6.0 * scale;
-        let menu_w = 260.0 * scale;
-        let menu_h = 130.0 * scale;
+        let menu_w = SETTINGS_MENU_W * scale;
+        let menu_h = SETTINGS_MENU_H * scale;
 
         let mut pb = PathBuilder::new();
         self.add_rounded_rect(&mut pb, menu_x, menu_y, menu_w, menu_h, 8.0 * scale);
@@ -347,6 +352,7 @@ impl Toolbar {
                 BackgroundMode::Blackboard  => "Black",
                 BackgroundMode::Whiteboard  => "White",
             }),
+            ("Start on Login", if autostart_enabled { "ON" } else { "OFF" }),
         ];
 
         let mut item_y = (menu_y + 8.0 * scale).round();
@@ -366,7 +372,15 @@ impl Toolbar {
             self.add_rounded_rect(&mut ind_pb, menu_x + 12.0 * scale, item_y + 8.0 * scale, 16.0 * scale, 16.0 * scale, 4.0 * scale);
             if let Some(ind_path) = ind_pb.finish() {
                 let mut ind_paint = Paint::default();
-                ind_paint.set_color(tiny_skia::Color::from_rgba8(50, 120, 240, 220));
+                if *label == "Start on Login" {
+                    ind_paint.set_color(if autostart_enabled {
+                        tiny_skia::Color::from_rgba8(50, 200, 120, 220)
+                    } else {
+                        tiny_skia::Color::from_rgba8(80, 85, 95, 220)
+                    });
+                } else {
+                    ind_paint.set_color(tiny_skia::Color::from_rgba8(50, 120, 240, 220));
+                }
                 pixmap.fill_path(&ind_path, &ind_paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
             }
 
