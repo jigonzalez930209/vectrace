@@ -24,10 +24,9 @@ impl X11Backend {
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Re-grab keyboard on every press so shortcuts work after drawing on the canvas
         // (XWayland/GNOME drops focus when interacting with the overlay).
+        // Never steal focus while click-through is on — that freezes apps/dock/tray.
         if !self.passthrough {
             claim_keyboard_quiet(conn, root, win_id);
-        } else {
-            focus_x11_window(conn, root, win_id);
         }
 
         // Tray quick crop: no toolbar — drag a rectangle, capture on release.
