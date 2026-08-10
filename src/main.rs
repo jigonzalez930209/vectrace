@@ -16,9 +16,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting Vectrace Screen Marker...");
 
+    let mut start_hidden = false;
+    for arg in std::env::args().skip(1) {
+        if arg == "--start-in-tray" || arg == "--hidden" || arg == "--minimized" {
+            start_hidden = true;
+        }
+    }
 
     let mut canvas = Canvas::new(0, 0); // Backend will resize dynamically to screen resolution
-    let mut backend = create_backend();
+    let mut backend = create_backend(start_hidden);
 
     backend.run(&mut canvas)?;
 
