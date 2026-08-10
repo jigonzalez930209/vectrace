@@ -322,7 +322,7 @@ pub struct WaylandBackend {
     show_settings_menu: bool,
     show_color_menu: bool,
     monitor_mode: MonitorMode,
-    is_hidden: bool,
+    pub is_hidden: bool,
     tray_rx: Option<Receiver<TrayEvent>>,
 }
 
@@ -404,6 +404,7 @@ impl PlatformBackend for WaylandBackend {
             } else {
                 crate::platform::x11::X11Backend::new()
             };
+            x11.is_hidden = self.is_hidden;
             return x11.run(canvas);
         }
 
