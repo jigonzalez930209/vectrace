@@ -157,12 +157,17 @@ impl PlatformBackend for X11Backend {
         let gc_id = conn.generate_id()?;
         conn.create_gc(gc_id, win_id, &CreateGCAux::new())?;
 
-        conn.map_window(win_id)?;
-        let _ = conn.flush();
-        // Give XWayland a moment to map before grabbing the keyboard.
-        let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        window::claim_keyboard(&conn, screen.root, win_id);
+        if self.is_hidden {
+            self.passthrough = true;
+            self.passthrough_focus_released = true;
+        } else {
+            conn.map_window(win_id)?;
+            let _ = conn.flush();
+            // Give XWayland a moment to map before grabbing the keyboard.
+            let _ = conn.get_input_focus().ok().and_then(|c| c.reply().ok());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            window::claim_keyboard(&conn, screen.root, win_id);
+        }
 
         let min_keycode = conn.setup().min_keycode;
         let max_keycode = conn.setup().max_keycode;
@@ -206,14 +211,16 @@ impl PlatformBackend for X11Backend {
             window::grab_global_hotkeys(&conn, screen.root, keycode_a);
             println!("Registered Global Daemon Shortcut: [Ctrl+Alt+A]");
         }
-        if keycode_escape > 0 {
-            window::grab_escape_key(&conn, screen.root, keycode_escape);
-            println!("Registered Escape → System Tray");
+        if !self.is_hidden {
+            if keycode_escape > 0 {
+                window::grab_escape_key(&conn, screen.root, keycode_escape);
+                println!("Registered Escape → System Tray");
+            }
+            println!(
+                "Registered {} overlay key grabs (XWayland-safe tool shortcuts)",
+                self.overlay_keycodes.len()
+            );
         }
-        println!(
-            "Registered {} overlay key grabs (XWayland-safe tool shortcuts)",
-            self.overlay_keycodes.len()
-        );
 
         println!("Controls:\n  [Ctrl+Alt+A] Show from tray / Toggle Click-Through\n  [Space]      Toggle Click-Through\n  [P/H/L/A/R/O/K/N/E/T] Tools\n  [U]          Undo\n  [Ctrl+R]     Redo\n  [C]          Clear canvas\n  [B]          Toggle Background\n  [ESC]        Minimize to System Tray\n");
 
