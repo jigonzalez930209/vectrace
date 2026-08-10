@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "vectrace"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "arboard",
  "ashpd",

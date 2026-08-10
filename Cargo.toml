@@ -1,6 +1,6 @@
 [package]
 name = "vectrace"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["Vectrace Developers"]
 description = "Agnostic vector screen marker and drawing overlay for X11 and Wayland"
