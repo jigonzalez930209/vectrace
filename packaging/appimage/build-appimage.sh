@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+export APPIMAGE_EXTRACT_AND_RUN=1
+
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APPDIR="${REPO_ROOT}/target/AppDir"
 

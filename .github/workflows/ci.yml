@@ -72,13 +72,21 @@ jobs:
       - name: Build Release Binary
         run: cargo build --release
 
+      - name: Extract Cargo Version
+        id: get_version
+        run: |
+          VERSION="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{ if (match($0,/"[^"]+"/)) { print substr($0,RSTART+1,RLENGTH-2); exit } }' Cargo.toml)"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
       - name: Generate DEB Package
-        run: cargo deb --no-build
+        run: |
+          mkdir -p target/debian
+          cargo deb --no-build
 
       - name: Generate RPM Package
         run: |
-          VERSION="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{ if (match($0,/"[^"]+"/)) { print substr($0,RSTART+1,RLENGTH-2); exit } }' Cargo.toml)"
-          cargo generate-rpm -o "target/generate-rpm/vectrace-${VERSION}-1.x86_64.rpm"
+          mkdir -p target/generate-rpm
+          cargo generate-rpm -o "target/generate-rpm/vectrace-${{ steps.get_version.outputs.version }}-1.x86_64.rpm"
 
       - name: Generate AppImage
         run: bash packaging/appimage/build-appimage.sh
@@ -104,14 +112,15 @@ jobs:
 
       - name: GitHub Release
         uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ github.ref_name }}
-          name: Vectrace ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', steps.get_version.outputs.version) }}
+          name: Vectrace ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', steps.get_version.outputs.version) }}
           generate_release_notes: true
           files: |
             target/debian/*.deb
             target/generate-rpm/*.rpm
             target/*.AppImage
             target/*.tar.gz
+
