@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 Vectrace Documentation
+    url: https://github.com/jigonzalez930209/vectrace#readme
+    about: Check the user guide and documentation before opening an issue.

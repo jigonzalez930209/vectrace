@@ -253,7 +253,8 @@ git add \
   package.json \
   packaging/arch/PKGBUILD \
   README.md \
-  docs/guide/installation.md
+  docs/guide/installation.md \
+  CHANGELOG.md
 
 if git diff --cached --quiet; then
   die "no staged changes after version bump"
